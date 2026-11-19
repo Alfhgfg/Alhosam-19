@@ -2585,6 +2585,7 @@ export async function recordStockAdjustment(
 export async function recordExpense(
   actor: ActorInfo,
   input: {
+    expenseId?: string;
     title: string;
     category: string;
     amount: number;
@@ -2597,7 +2598,7 @@ export async function recordExpense(
   if (cleanAmount <= 0) throw new Error('يجب أن يكون مبلغ المصروف أكبر من صفر.');
 
   const opId = input.operationId || generateDocId('op');
-  const expId = generateDocId('exp');
+  const expId = input.expenseId || generateDocId('exp');
   const devFields = deviceFieldsFor(actor);
 
   const enqueueOfflineExpense = async () => {
@@ -2725,6 +2726,7 @@ export async function recordExpense(
 export async function recordVoucher(
   actor: ActorInfo,
   input: {
+    voucherId?: string;
     type: 'receipt' | 'payment';
     partyType: 'customer' | 'supplier';
     partyId: string;
@@ -2739,7 +2741,7 @@ export async function recordVoucher(
   if (cleanAmount <= 0) throw new Error('يجب أن يكون مبلغ السند أكبر من صفر.');
 
   const opId = input.operationId || generateDocId('op');
-  const voucherId = generateDocId('vch');
+  const voucherId = input.voucherId || generateDocId('vch');
   const devFields = deviceFieldsFor(actor);
 
   const enqueueOfflineVoucher = async () => {
@@ -3183,7 +3185,9 @@ export async function flushSinglePendingOperation(
   }
 
   if (op.type === 'expense') {
+    const expenseId = typeof p.expenseId === 'string' ? p.expenseId : op.operationId;
     await recordExpense(actor, {
+      expenseId,
       title: String(p.title || ''),
       category: String(p.category || ''),
       amount: Number(p.amount || 0),
@@ -3191,11 +3195,13 @@ export async function flushSinglePendingOperation(
       operationId: op.operationId,
       skipQueue: true,
     });
-    return { referenceId: op.operationId };
+    return { referenceId: expenseId };
   }
 
   if (op.type === 'voucher') {
+    const voucherId = typeof p.voucherId === 'string' ? p.voucherId : undefined;
     const res = await recordVoucher(actor, {
+      voucherId,
       type: (p.type as 'receipt' | 'payment') || 'receipt',
       partyType: (p.partyType as 'customer' | 'supplier') || 'customer',
       partyId: String(p.partyId || ''),
@@ -3205,7 +3211,7 @@ export async function flushSinglePendingOperation(
       operationId: op.operationId,
       skipQueue: true,
     });
-    return { referenceNumber: res.voucherNumber };
+    return { referenceId: voucherId, referenceNumber: res.voucherNumber };
   }
 
   if (op.type === 'cash_adjust') {
