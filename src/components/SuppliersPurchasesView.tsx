@@ -25,7 +25,7 @@ interface PurchaseLine {
 
 export const SuppliersPurchasesView: React.FC = () => {
   const { actorInfo } = useAuth();
-  const { suppliers, purchases, products, vouchers, settings, productByCode } =
+  const { suppliers, purchases, products, vouchers, settings, productByCode, isOnline } =
     useStoreData();
 
   const [tab, setTab] = useState<'new_purchase' | 'history' | 'suppliers'>('new_purchase');
@@ -154,6 +154,7 @@ export const SuppliersPurchasesView: React.FC = () => {
     if (!actorInfo) return;
     setSavingSupp(true);
     try {
+      const createdName = suppName;
       const id = await createSupplier(actorInfo, {
         name: suppName,
         phone: suppPhone,
@@ -164,6 +165,12 @@ export const SuppliersPurchasesView: React.FC = () => {
       setSuppName('');
       setSuppPhone('');
       setSuppAddress('');
+      setFeedback({
+        type: 'ok',
+        text: !isOnline
+          ? `تم حفظ المورد "${createdName}" محلياً وسيُزامن فور عودة الاتصال.`
+          : `تم تسجيل المورد "${createdName}" بنجاح.`,
+      });
     } catch (err) {
       setFeedback({
         type: 'err',

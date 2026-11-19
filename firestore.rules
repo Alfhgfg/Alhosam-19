@@ -182,7 +182,23 @@ service cloud.firestore {
           'employeeId', 'deviceId', 'deviceName', 'createdAt'
         ]) &&
         isValidId(data.operationId) &&
-        data.operationType in ['sale', 'purchase', 'return', 'voucher', 'expense', 'stock_adjust', 'cash_adjust'] &&
+        data.operationType in [
+          'sale',
+          'purchase',
+          'return',
+          'voucher',
+          'expense',
+          'stock_adjust',
+          'cash_adjust',
+          'product_create',
+          'product_update',
+          'product_delete',
+          'customer_create',
+          'customer_update',
+          'supplier_create',
+          'supplier_update',
+          'sale_cancel'
+        ] &&
         isValidId(data.referenceId) &&
         (!('referenceNumber' in data) || (data.referenceNumber is string && data.referenceNumber.size() <= 40)) &&
         isValidId(data.employeeId) &&

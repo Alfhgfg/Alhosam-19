@@ -42,8 +42,10 @@ import {
   roundMoney,
   truncateText,
 } from '../utils/format';
+import { localDbService } from './localDbService';
 import {
   enqueuePendingOperation,
+  isAppOnline,
   isNetworkOrOfflineError,
 } from './offlineQueueService';
 
@@ -53,6 +55,37 @@ export interface ActorInfo {
   role: 'admin' | 'employee';
   deviceId: string;
   deviceName: string;
+}
+
+const INTERACTIVE_TX_TIMEOUT_MS = 5500;
+const SYNC_TX_TIMEOUT_MS = 18000;
+
+async function runTransactionWithTimeout<T>(
+  txFn: Parameters<typeof runTransaction<T>>[1],
+  skipQueue?: boolean
+): Promise<T> {
+  const ms = skipQueue ? SYNC_TX_TIMEOUT_MS : INTERACTIVE_TX_TIMEOUT_MS;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('NETWORK_TIMEOUT'));
+    }, ms);
+    runTransaction(db, txFn).then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function toUpdatedAtMs(ts: unknown): number | null {
+  if (!ts || typeof ts !== 'object') return null;
+  const obj = ts as { toMillis?: () => number };
+  return typeof obj.toMillis === 'function' ? obj.toMillis() : null;
 }
 
 function buildAuditEntry(
@@ -292,6 +325,7 @@ export async function deleteDeviceRecord(
 export async function createProduct(
   actor: ActorInfo,
   input: {
+    productId?: string;
     code?: string;
     barcode?: string;
     name: string;
@@ -302,19 +336,61 @@ export async function createProduct(
     sellPrice: number;
     stock: number;
     minStock: number;
+    operationId?: string;
+    skipQueue?: boolean;
   }
-): Promise<string> {
-  const productId = generateDocId('prod');
+): Promise<{ productId: string; queued: boolean }> {
+  const productId = input.productId || generateDocId('prod');
+  const opId = input.operationId || generateDocId('op');
+
+  let finalCode = (input.code || '').trim().toUpperCase();
+  if (finalCode && !CODE_PATTERN.test(finalCode)) {
+    throw new Error('كود الصنف يجب أن يحتوي على أحرف إنجليزية وأرقام أو (- , _) فقط.');
+  }
+
+  const enqueueOfflineProductCreate = async () => {
+    const offlineCode =
+      finalCode || `HS-L${opId.slice(-5).toUpperCase().replace(/[^A-Z0-9]/g, '0')}`;
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'product_create',
+      summary: `إضافة صنف: ${input.name} (${offlineCode})`,
+      localTempRef: offlineCode,
+      actor,
+      payload: {
+        productId,
+        code: offlineCode,
+        barcode: input.barcode?.trim() || '',
+        name: input.name,
+        category: input.category || 'عام',
+        description: input.description?.trim() || '',
+        unit: input.unit || 'حبة',
+        costPrice: roundMoney(Math.max(0, Number(input.costPrice) || 0)),
+        sellPrice: roundMoney(Math.max(0, Number(input.sellPrice) || 0)),
+        stock: Math.max(0, Number(input.stock) || 0),
+        minStock: Math.max(0, Number(input.minStock) || 0),
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { productId, queued: true };
+  };
+
+  if (!isAppOnline() && !input.skipQueue) {
+    return enqueueOfflineProductCreate();
+  }
+
   const countersRef = doc(db, 'counters', 'main');
   const productRef = doc(db, 'products', productId);
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
 
   try {
-    let finalCode = (input.code || '').trim().toUpperCase();
-    if (finalCode && !CODE_PATTERN.test(finalCode)) {
-      throw new Error('كود الصنف يجب أن يحتوي على أحرف إنجليزية وأرقام أو (- , _) فقط.');
-    }
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
 
-    await runTransaction(db, async (tx) => {
       const countersSnap = await tx.get(countersRef);
       const nextSeq = countersSnap.exists()
         ? Number(countersSnap.data().nextProductSeq || 1001)
@@ -388,7 +464,7 @@ export async function createProduct(
           reason: 'رصيد افتتاحي عند إضافة الصنف',
           employeeId: actor.uid,
           employeeName: truncateText(actor.name, FIELD_LIMITS.shortNameMax),
-          ...deviceFieldsFor(actor),
+          ...devFields,
           createdAt: serverTimestamp(),
         });
       }
@@ -403,10 +479,23 @@ export async function createProduct(
           `إضافة الصنف ${input.name} (${finalCode}) بسعر بيع ${cleanSell}`
         )
       );
-    });
 
-    return productId;
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'product_create',
+        referenceId: productId,
+        referenceNumber: finalCode,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, input.skipQueue);
+
+    return { productId, queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !input.skipQueue) {
+      return enqueueOfflineProductCreate();
+    }
     if (err instanceof Error && (err.message.includes('مستخدم بالفعل') || err.message.includes('كود الصنف'))) {
       throw err;
     }
@@ -427,10 +516,59 @@ export async function updateProduct(
     sellPrice: number;
     minStock: number;
     isActive: boolean;
+    operationId?: string;
+    skipQueue?: boolean;
+    baseUpdatedAtMs?: number | null;
+    forceApply?: boolean;
   }
-): Promise<void> {
+): Promise<{ queued: boolean }> {
+  const opId = updates.operationId || generateDocId('op');
+  const baseUpdatedAtMs =
+    updates.baseUpdatedAtMs !== undefined
+      ? updates.baseUpdatedAtMs
+      : toUpdatedAtMs(product.updatedAt);
+
+  const enqueueOfflineProductUpdate = async () => {
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'product_update',
+      summary: `تعديل صنف: ${updates.name} (${product.code})`,
+      localTempRef: product.code,
+      actor,
+      payload: {
+        productId: product.id,
+        code: product.code,
+        barcode: updates.barcode?.trim() || '',
+        name: updates.name,
+        category: updates.category,
+        description: updates.description?.trim() || '',
+        unit: updates.unit,
+        costPrice: roundMoney(Math.max(0, updates.costPrice)),
+        sellPrice: roundMoney(Math.max(0, updates.sellPrice)),
+        minStock: Math.max(0, updates.minStock),
+        isActive: updates.isActive,
+      },
+      baseState: {
+        baseUpdatedAtMs,
+        prevCostPrice: product.costPrice,
+        prevSellPrice: product.sellPrice,
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { queued: true };
+  };
+
+  if (!isAppOnline() && !updates.skipQueue) {
+    return enqueueOfflineProductUpdate();
+  }
+
+  const productRef = doc(db, 'products', product.id);
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
+
   try {
-    const productRef = doc(db, 'products', product.id);
     const payload: Record<string, unknown> = {
       name: truncateText(updates.name, FIELD_LIMITS.nameMax),
       category: truncateText(updates.category, FIELD_LIMITS.categoryMax),
@@ -448,7 +586,31 @@ export async function updateProduct(
       updatedAt: serverTimestamp(),
     };
 
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
+      const prodSnap = await tx.get(productRef);
+      if (!prodSnap.exists()) {
+        throw new Error('الصنف غير موجود على الخادم (ربما تم حذفه من جهاز آخر).');
+      }
+      const serverData = prodSnap.data() as Omit<Product, 'id'>;
+      const serverUpdatedMs = toUpdatedAtMs(serverData.updatedAt);
+      if (
+        updates.skipQueue &&
+        !updates.forceApply &&
+        typeof baseUpdatedAtMs === 'number' &&
+        typeof serverUpdatedMs === 'number' &&
+        serverUpdatedMs > baseUpdatedAtMs + 2000 &&
+        (serverData.sellPrice !== product.sellPrice ||
+          serverData.costPrice !== product.costPrice ||
+          serverData.name !== product.name)
+      ) {
+        throw new Error(
+          `تعارض تعديل متزامن للصنف "${serverData.name}": تم تعديل بيانات الصنف أو أسعاره على الخادم من جهاز آخر أثناء انقطاع الاتصال.`
+        );
+      }
+
       tx.update(productRef, payload);
       tx.set(
         doc(db, 'audit_logs', generateDocId('aud')),
@@ -461,15 +623,69 @@ export async function updateProduct(
           `سعر الشراء: ${product.costPrice} -> ${payload.costPrice}, سعر البيع: ${product.sellPrice} -> ${payload.sellPrice}`
         )
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'product_update',
+        referenceId: product.id,
+        referenceNumber: product.code,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, updates.skipQueue);
+    return { queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !updates.skipQueue) {
+      return enqueueOfflineProductUpdate();
+    }
+    if (
+      err instanceof Error &&
+      (err.message.includes('تعارض') || err.message.includes('غير موجود'))
+    ) {
+      throw err;
+    }
     handleFirestoreError(err, OperationType.UPDATE, `products/${product.id}`);
   }
 }
 
-export async function deleteProduct(actor: ActorInfo, product: Product): Promise<void> {
+export async function deleteProduct(
+  actor: ActorInfo,
+  product: Product,
+  options?: { operationId?: string; skipQueue?: boolean }
+): Promise<{ queued: boolean }> {
+  const opId = options?.operationId || generateDocId('op');
+
+  const enqueueOfflineDelete = async () => {
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'product_delete',
+      summary: `حذف صنف: ${product.name} (${product.code})`,
+      localTempRef: product.code,
+      actor,
+      payload: {
+        productId: product.id,
+        code: product.code,
+        name: product.name,
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { queued: true };
+  };
+
+  if (!isAppOnline() && !options?.skipQueue) {
+    return enqueueOfflineDelete();
+  }
+
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
+
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
       tx.delete(doc(db, 'products', product.id));
       tx.delete(doc(db, 'product_codes', makeSafeCodeId(product.code)));
       tx.set(
@@ -482,8 +698,21 @@ export async function deleteProduct(actor: ActorInfo, product: Product): Promise
           `حذف الصنف ${product.name} (${product.code})`
         )
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'product_delete',
+        referenceId: product.id,
+        referenceNumber: product.code,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, options?.skipQueue);
+    return { queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !options?.skipQueue) {
+      return enqueueOfflineDelete();
+    }
     handleFirestoreError(err, OperationType.DELETE, `products/${product.id}`);
   }
 }
@@ -491,18 +720,81 @@ export async function deleteProduct(actor: ActorInfo, product: Product): Promise
 // ---------------- CUSTOMERS & SUPPLIERS ----------------
 export async function createCustomer(
   actor: ActorInfo,
-  input: { name: string; phone?: string; address?: string; notes?: string }
-): Promise<Customer> {
-  const customerId = generateDocId('cust');
+  input: {
+    customerId?: string;
+    customerCode?: string;
+    name: string;
+    phone?: string;
+    address?: string;
+    notes?: string;
+    operationId?: string;
+    skipQueue?: boolean;
+  }
+): Promise<Customer & { queued?: boolean }> {
+  const customerId = input.customerId || generateDocId('cust');
+  const opId = input.operationId || generateDocId('op');
+
+  const enqueueOfflineCustomerCreate = async (): Promise<Customer & { queued?: boolean }> => {
+    const offlineCode =
+      input.customerCode || `C-L${opId.slice(-4).toUpperCase().replace(/[^A-Z0-9]/g, '0')}`;
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'customer_create',
+      summary: `إضافة عميل: ${input.name} (${offlineCode})`,
+      localTempRef: offlineCode,
+      actor,
+      payload: {
+        customerId,
+        customerCode: offlineCode,
+        name: input.name,
+        phone: input.phone?.trim() || '',
+        address: input.address?.trim() || '',
+        notes: input.notes?.trim() || '',
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return {
+      id: customerId,
+      customerCode: offlineCode,
+      name: truncateText(input.name, FIELD_LIMITS.partyNameMax),
+      phone: input.phone?.trim(),
+      address: input.address?.trim(),
+      notes: input.notes?.trim(),
+      totalPurchases: 0,
+      totalPaid: 0,
+      balanceDue: 0,
+      createdBy: actor.uid,
+      createdAt: null,
+      updatedAt: null,
+      queued: true,
+    };
+  };
+
+  if (!isAppOnline() && !input.skipQueue) {
+    return enqueueOfflineCustomerCreate();
+  }
+
   const countersRef = doc(db, 'counters', 'main');
   const custRef = doc(db, 'customers', customerId);
-  let generatedCode = '';
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
+  let generatedCode = input.customerCode || '';
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) {
+        generatedCode = String(opSnap.data().referenceNumber || generatedCode || 'C-SYNC');
+        return;
+      }
+
       const cSnap = await tx.get(countersRef);
       const seq = cSnap.exists() ? Number(cSnap.data().nextCustomerSeq || 1001) : 1001;
-      generatedCode = `C-${seq}`;
+      if (!generatedCode) {
+        generatedCode = `C-${seq}`;
+      }
 
       if (cSnap.exists()) {
         tx.update(countersRef, {
@@ -530,7 +822,16 @@ export async function createCustomer(
         doc(db, 'audit_logs', generateDocId('aud')),
         buildAuditEntry(actor, 'إضافة عميل', 'customer', customerId, `تسجيل العميل ${input.name} (${generatedCode})`)
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'customer_create',
+        referenceId: customerId,
+        referenceNumber: generatedCode,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, input.skipQueue);
 
     return {
       id: customerId,
@@ -545,8 +846,12 @@ export async function createCustomer(
       createdBy: actor.uid,
       createdAt: null,
       updatedAt: null,
+      queued: false,
     };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !input.skipQueue) {
+      return enqueueOfflineCustomerCreate();
+    }
     handleFirestoreError(err, OperationType.CREATE, 'customers');
   }
 }
@@ -554,8 +859,53 @@ export async function createCustomer(
 export async function updateCustomer(
   actor: ActorInfo,
   customer: Customer,
-  input: { name: string; phone?: string; address?: string; notes?: string }
-): Promise<void> {
+  input: {
+    name: string;
+    phone?: string;
+    address?: string;
+    notes?: string;
+    operationId?: string;
+    skipQueue?: boolean;
+    baseUpdatedAtMs?: number | null;
+    forceApply?: boolean;
+  }
+): Promise<{ queued: boolean }> {
+  const opId = input.operationId || generateDocId('op');
+  const baseUpdatedAtMs =
+    input.baseUpdatedAtMs !== undefined
+      ? input.baseUpdatedAtMs
+      : toUpdatedAtMs(customer.updatedAt);
+
+  const enqueueOfflineCustomerUpdate = async () => {
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'customer_update',
+      summary: `تعديل عميل: ${input.name} (${customer.customerCode})`,
+      localTempRef: customer.customerCode,
+      actor,
+      payload: {
+        customerId: customer.id,
+        customerCode: customer.customerCode,
+        name: input.name,
+        phone: input.phone?.trim() || '',
+        address: input.address?.trim() || '',
+        notes: input.notes?.trim() || '',
+      },
+      baseState: { baseUpdatedAtMs },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { queued: true };
+  };
+
+  if (!isAppOnline() && !input.skipQueue) {
+    return enqueueOfflineCustomerUpdate();
+  }
+
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
+
   try {
     const custRef = doc(db, 'customers', customer.id);
     const data: Record<string, unknown> = {
@@ -572,31 +922,116 @@ export async function updateCustomer(
       updatedAt: serverTimestamp(),
     };
 
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
+      const custSnap = await tx.get(custRef);
+      if (!custSnap.exists()) {
+        throw new Error('العميل غير موجود على الخادم.');
+      }
+      const serverData = custSnap.data() as Omit<Customer, 'id'>;
+      const serverUpdatedMs = toUpdatedAtMs(serverData.updatedAt);
+      if (
+        input.skipQueue &&
+        !input.forceApply &&
+        typeof baseUpdatedAtMs === 'number' &&
+        typeof serverUpdatedMs === 'number' &&
+        serverUpdatedMs > baseUpdatedAtMs + 2000 &&
+        serverData.name !== customer.name
+      ) {
+        throw new Error(
+          `تعارض تعديل متزامن للعميل "${serverData.name}": تم تعديل بياناته من جهاز آخر أثناء انقطاع الاتصال.`
+        );
+      }
+
       tx.update(custRef, data);
       tx.set(
         doc(db, 'audit_logs', generateDocId('aud')),
         buildAuditEntry(actor, 'تعديل عميل', 'customer', customer.id, `تحديث بيانات العميل ${input.name} (${customer.customerCode})`)
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'customer_update',
+        referenceId: customer.id,
+        referenceNumber: customer.customerCode,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, input.skipQueue);
+    return { queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !input.skipQueue) {
+      return enqueueOfflineCustomerUpdate();
+    }
+    if (
+      err instanceof Error &&
+      (err.message.includes('تعارض') || err.message.includes('غير موجود'))
+    ) {
+      throw err;
+    }
     handleFirestoreError(err, OperationType.UPDATE, `customers/${customer.id}`);
   }
 }
 
 export async function createSupplier(
   actor: ActorInfo,
-  input: { name: string; phone?: string; address?: string; notes?: string }
+  input: {
+    supplierId?: string;
+    supplierCode?: string;
+    name: string;
+    phone?: string;
+    address?: string;
+    notes?: string;
+    operationId?: string;
+    skipQueue?: boolean;
+  }
 ): Promise<string> {
-  const supplierId = generateDocId('supp');
+  const supplierId = input.supplierId || generateDocId('supp');
+  const opId = input.operationId || generateDocId('op');
+
+  const enqueueOfflineSupplierCreate = async () => {
+    const offlineCode =
+      input.supplierCode || `S-L${opId.slice(-4).toUpperCase().replace(/[^A-Z0-9]/g, '0')}`;
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'supplier_create',
+      summary: `إضافة مورد: ${input.name} (${offlineCode})`,
+      localTempRef: offlineCode,
+      actor,
+      payload: {
+        supplierId,
+        supplierCode: offlineCode,
+        name: input.name,
+        phone: input.phone?.trim() || '',
+        address: input.address?.trim() || '',
+        notes: input.notes?.trim() || '',
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return supplierId;
+  };
+
+  if (!isAppOnline() && !input.skipQueue) {
+    return enqueueOfflineSupplierCreate();
+  }
+
   const countersRef = doc(db, 'counters', 'main');
   const suppRef = doc(db, 'suppliers', supplierId);
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
       const cSnap = await tx.get(countersRef);
       const seq = cSnap.exists() ? Number(cSnap.data().nextSupplierSeq || 1001) : 1001;
-      const code = `S-${seq}`;
+      const code = input.supplierCode || `S-${seq}`;
 
       if (cSnap.exists()) {
         tx.update(countersRef, {
@@ -624,9 +1059,21 @@ export async function createSupplier(
         doc(db, 'audit_logs', generateDocId('aud')),
         buildAuditEntry(actor, 'إضافة مورد', 'supplier', supplierId, `تسجيل المورد ${input.name} (${code})`)
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'supplier_create',
+        referenceId: supplierId,
+        referenceNumber: code,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, input.skipQueue);
     return supplierId;
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !input.skipQueue) {
+      return enqueueOfflineSupplierCreate();
+    }
     handleFirestoreError(err, OperationType.CREATE, 'suppliers');
   }
 }
@@ -634,8 +1081,53 @@ export async function createSupplier(
 export async function updateSupplier(
   actor: ActorInfo,
   supplier: Supplier,
-  input: { name: string; phone?: string; address?: string; notes?: string }
-): Promise<void> {
+  input: {
+    name: string;
+    phone?: string;
+    address?: string;
+    notes?: string;
+    operationId?: string;
+    skipQueue?: boolean;
+    baseUpdatedAtMs?: number | null;
+    forceApply?: boolean;
+  }
+): Promise<{ queued: boolean }> {
+  const opId = input.operationId || generateDocId('op');
+  const baseUpdatedAtMs =
+    input.baseUpdatedAtMs !== undefined
+      ? input.baseUpdatedAtMs
+      : toUpdatedAtMs(supplier.updatedAt);
+
+  const enqueueOfflineSupplierUpdate = async () => {
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'supplier_update',
+      summary: `تعديل مورد: ${input.name} (${supplier.supplierCode})`,
+      localTempRef: supplier.supplierCode,
+      actor,
+      payload: {
+        supplierId: supplier.id,
+        supplierCode: supplier.supplierCode,
+        name: input.name,
+        phone: input.phone?.trim() || '',
+        address: input.address?.trim() || '',
+        notes: input.notes?.trim() || '',
+      },
+      baseState: { baseUpdatedAtMs },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { queued: true };
+  };
+
+  if (!isAppOnline() && !input.skipQueue) {
+    return enqueueOfflineSupplierUpdate();
+  }
+
+  const opRef = doc(db, 'processed_operations', opId);
+  const devFields = deviceFieldsFor(actor);
+
   try {
     const suppRef = doc(db, 'suppliers', supplier.id);
     const data: Record<string, unknown> = {
@@ -652,14 +1144,55 @@ export async function updateSupplier(
       updatedAt: serverTimestamp(),
     };
 
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
+      const suppSnap = await tx.get(suppRef);
+      if (!suppSnap.exists()) {
+        throw new Error('المورد غير موجود على الخادم.');
+      }
+      const serverData = suppSnap.data() as Omit<Supplier, 'id'>;
+      const serverUpdatedMs = toUpdatedAtMs(serverData.updatedAt);
+      if (
+        input.skipQueue &&
+        !input.forceApply &&
+        typeof baseUpdatedAtMs === 'number' &&
+        typeof serverUpdatedMs === 'number' &&
+        serverUpdatedMs > baseUpdatedAtMs + 2000 &&
+        serverData.name !== supplier.name
+      ) {
+        throw new Error(
+          `تعارض تعديل متزامن للمورد "${serverData.name}": تم تعديل بياناته من جهاز آخر أثناء انقطاع الاتصال.`
+        );
+      }
+
       tx.update(suppRef, data);
       tx.set(
         doc(db, 'audit_logs', generateDocId('aud')),
         buildAuditEntry(actor, 'تعديل مورد', 'supplier', supplier.id, `تحديث بيانات المورد ${input.name}`)
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'supplier_update',
+        referenceId: supplier.id,
+        referenceNumber: supplier.supplierCode,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, input.skipQueue);
+    return { queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !input.skipQueue) {
+      return enqueueOfflineSupplierUpdate();
+    }
+    if (
+      err instanceof Error &&
+      (err.message.includes('تعارض') || err.message.includes('غير موجود'))
+    ) {
+      throw err;
+    }
     handleFirestoreError(err, OperationType.UPDATE, `suppliers/${supplier.id}`);
   }
 }
@@ -678,6 +1211,7 @@ export interface SaleInputItem {
 export async function executeSale(
   actor: ActorInfo,
   input: {
+    saleId?: string;
     customer: Pick<Customer, 'id' | 'customerCode' | 'name'> | null;
     items: SaleInputItem[];
     discount: number;
@@ -702,6 +1236,7 @@ export async function executeSale(
   }
 
   const opId = input.operationId || generateDocId('op');
+  const saleId = input.saleId || generateDocId('sale');
   const devFields = deviceFieldsFor(actor);
 
   const buildProvisionalSale = (tempRef: string): SaleInvoice => {
@@ -727,7 +1262,7 @@ export async function executeSale(
         : roundMoney(Math.min(Math.max(0, input.paidAmount), total));
     const remainingAmount = roundMoney(Math.max(0, total - paidAmount));
     return {
-      id: opId,
+      id: saleId,
       invoiceNumber: tempRef,
       employeeId: actor.uid,
       employeeName: actor.name,
@@ -754,7 +1289,7 @@ export async function executeSale(
     };
   };
 
-  const enqueueOfflineSale = () => {
+  const enqueueOfflineSale = async () => {
     const tempRef = `OFF-${opId.slice(-5).toUpperCase()}`;
     const provisional = buildProvisionalSale(tempRef);
     const op: PendingOperation = {
@@ -764,6 +1299,7 @@ export async function executeSale(
       localTempRef: tempRef,
       actor,
       payload: {
+        saleId,
         customer: input.customer
           ? {
               id: input.customer.id,
@@ -781,20 +1317,19 @@ export async function executeSale(
       attempts: 0,
       createdAtIso: new Date().toISOString(),
     };
-    enqueuePendingOperation(op);
+    await enqueuePendingOperation(op);
     return {
-      saleId: opId,
+      saleId,
       invoiceNumber: tempRef,
       saleData: provisional,
       queued: true,
     };
   };
 
-  if (!navigator.onLine && !input.skipQueue) {
+  if (!isAppOnline() && !input.skipQueue) {
     return enqueueOfflineSale();
   }
 
-  const saleId = generateDocId('sale');
   const countersRef = doc(db, 'counters', 'main');
   const opRef = doc(db, 'processed_operations', opId);
   const deviceRef = doc(db, 'devices', actor.deviceId);
@@ -803,7 +1338,7 @@ export async function executeSale(
   let constructedSale!: SaleInvoice;
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
       // 1. ALL READS FIRST (including idempotency check)
       const opSnap = await tx.get(opRef);
       if (opSnap.exists()) {
@@ -1060,7 +1595,12 @@ export async function executeSale(
         createdAt: null,
         updatedAt: null,
       };
-    });
+    }, input.skipQueue);
+
+    await localDbService.recordIdMapping(opId, resolvedSaleId, invoiceNumber);
+    if (saleId !== resolvedSaleId) {
+      await localDbService.recordIdMapping(saleId, resolvedSaleId, invoiceNumber);
+    }
 
     return {
       saleId: resolvedSaleId,
@@ -1089,6 +1629,7 @@ export async function executeSale(
 export async function executePurchase(
   actor: ActorInfo,
   input: {
+    purchaseId?: string;
     supplier: Pick<Supplier, 'id' | 'supplierCode' | 'name'>;
     items: { productId: string; qty: number; costPrice: number; updateProductCost: boolean }[];
     paymentMethod: PaymentMethod;
@@ -1103,17 +1644,19 @@ export async function executePurchase(
   }
 
   const opId = input.operationId || generateDocId('op');
+  const purchaseId = input.purchaseId || generateDocId('pur');
   const devFields = deviceFieldsFor(actor);
 
-  const enqueueOfflinePurchase = () => {
+  const enqueueOfflinePurchase = async () => {
     const tempRef = `OFF-PUR-${opId.slice(-4).toUpperCase()}`;
-    enqueuePendingOperation({
+    await enqueuePendingOperation({
       operationId: opId,
       type: 'purchase',
       summary: `شراء ${tempRef} من ${input.supplier.name}`,
       localTempRef: tempRef,
       actor,
       payload: {
+        purchaseId,
         supplier: {
           id: input.supplier.id,
           supplierCode: input.supplier.supplierCode,
@@ -1128,21 +1671,20 @@ export async function executePurchase(
       attempts: 0,
       createdAtIso: new Date().toISOString(),
     });
-    return { purchaseId: opId, queued: true };
+    return { purchaseId, queued: true };
   };
 
-  if (!navigator.onLine && !input.skipQueue) {
+  if (!isAppOnline() && !input.skipQueue) {
     return enqueueOfflinePurchase();
   }
 
-  const purchaseId = generateDocId('pur');
   const countersRef = doc(db, 'counters', 'main');
   const opRef = doc(db, 'processed_operations', opId);
   const deviceRef = doc(db, 'devices', actor.deviceId);
   let resolvedId = purchaseId;
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
       const opSnap = await tx.get(opRef);
       if (opSnap.exists()) {
         resolvedId = String(opSnap.data().referenceId || purchaseId);
@@ -1335,7 +1877,8 @@ export async function executePurchase(
           updatedAt: serverTimestamp(),
         });
       }
-    });
+    }, input.skipQueue);
+    await localDbService.recordIdMapping(opId, resolvedId);
     return { purchaseId: resolvedId, queued: false };
   } catch (err) {
     if (isNetworkOrOfflineError(err) && !input.skipQueue) {
@@ -1357,6 +1900,7 @@ export async function executePurchase(
 export async function executeSalesReturn(
   actor: ActorInfo,
   input: {
+    returnId?: string;
     sale: SaleInvoice;
     existingReturns: SalesReturn[];
     itemsToReturn: { productId: string; qty: number }[];
@@ -1376,36 +1920,7 @@ export async function executeSalesReturn(
     throw new Error('يرجى تحديد كمية واحدة على الأقل للإرجاع.');
   }
 
-  const opId = input.operationId || generateDocId('op');
-  const devFields = deviceFieldsFor(actor);
-
-  const enqueueOfflineReturn = () => {
-    const tempRef = `OFF-RET-${opId.slice(-4).toUpperCase()}`;
-    enqueuePendingOperation({
-      operationId: opId,
-      type: 'return',
-      summary: `مرتجع فاتورة ${input.sale.invoiceNumber}`,
-      localTempRef: tempRef,
-      actor,
-      payload: {
-        saleId: input.sale.id,
-        itemsToReturn: activeReturnItems,
-        restockValid: input.restockValid,
-        refundCash: input.refundCash,
-        reason: input.reason,
-      },
-      status: 'pending',
-      attempts: 0,
-      createdAtIso: new Date().toISOString(),
-    });
-    return { returnId: opId, queued: true };
-  };
-
-  if (!navigator.onLine && !input.skipQueue) {
-    return enqueueOfflineReturn();
-  }
-
-  // Compute already returned qty per productId
+  // Compute already returned qty per productId before online/offline split
   const alreadyReturnedMap = new Map<string, number>();
   for (const r of input.existingReturns) {
     if (r.saleId === input.sale.id) {
@@ -1417,8 +1932,49 @@ export async function executeSalesReturn(
       }
     }
   }
+  for (const req of activeReturnItems) {
+    const orig = input.sale.items.find((x) => x.productId === req.productId);
+    if (!orig) throw new Error('الصنف غير موجود في الفاتورة.');
+    const prevRet = alreadyReturnedMap.get(req.productId) || 0;
+    const maxAllowed = orig.qty - prevRet;
+    if (req.qty > maxAllowed) {
+      throw new Error(
+        `الكمية المرتجعة من "${orig.name}" (${req.qty}) تتجاوز المتبقي القابل للإرجاع (${maxAllowed}).`
+      );
+    }
+  }
 
-  const returnId = generateDocId('ret');
+  const opId = input.operationId || generateDocId('op');
+  const returnId = input.returnId || generateDocId('ret');
+  const devFields = deviceFieldsFor(actor);
+
+  const enqueueOfflineReturn = async () => {
+    const tempRef = `OFF-RET-${opId.slice(-4).toUpperCase()}`;
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'return',
+      summary: `مرتجع فاتورة ${input.sale.invoiceNumber}`,
+      localTempRef: tempRef,
+      actor,
+      payload: {
+        returnId,
+        saleId: input.sale.id,
+        itemsToReturn: activeReturnItems,
+        restockValid: input.restockValid,
+        refundCash: input.refundCash,
+        reason: input.reason,
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { returnId, queued: true };
+  };
+
+  if (!isAppOnline() && !input.skipQueue) {
+    return enqueueOfflineReturn();
+  }
+
   const countersRef = doc(db, 'counters', 'main');
   const saleRef = doc(db, 'sales', input.sale.id);
   const opRef = doc(db, 'processed_operations', opId);
@@ -1426,7 +1982,7 @@ export async function executeSalesReturn(
   let resolvedReturnId = returnId;
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
       const opSnap = await tx.get(opRef);
       if (opSnap.exists()) {
         resolvedReturnId = String(opSnap.data().referenceId || returnId);
@@ -1648,8 +2204,9 @@ export async function executeSalesReturn(
           updatedAt: serverTimestamp(),
         });
       }
-    });
+    }, input.skipQueue);
 
+    await localDbService.recordIdMapping(opId, resolvedReturnId);
     return { returnId: resolvedReturnId, queued: false };
   } catch (err) {
     if (isNetworkOrOfflineError(err) && !input.skipQueue) {
@@ -1671,30 +2228,80 @@ export async function executeSalesReturn(
 export async function cancelSaleInvoice(
   actor: ActorInfo,
   sale: SaleInvoice,
-  reason: string
-): Promise<void> {
-  if (sale.status === 'cancelled') return;
+  reason: string,
+  options?: { operationId?: string; skipQueue?: boolean }
+): Promise<{ queued: boolean }> {
+  if (sale.status === 'cancelled') return { queued: false };
+
+  const opId = options?.operationId || generateDocId('op');
+  const devFields = deviceFieldsFor(actor);
+
+  const enqueueOfflineCancel = async () => {
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'sale_cancel',
+      summary: `إلغاء فاتورة ${sale.invoiceNumber}`,
+      localTempRef: sale.invoiceNumber,
+      actor,
+      payload: {
+        saleId: sale.id,
+        invoiceNumber: sale.invoiceNumber,
+        reason,
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { queued: true };
+  };
+
+  if (!isAppOnline() && !options?.skipQueue) {
+    return enqueueOfflineCancel();
+  }
 
   const countersRef = doc(db, 'counters', 'main');
   const saleRef = doc(db, 'sales', sale.id);
-  const devFields = deviceFieldsFor(actor);
+  const opRef = doc(db, 'processed_operations', opId);
+  const deviceRef = doc(db, 'devices', actor.deviceId);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const countersSnap = await tx.get(countersRef);
-      const currentCash = countersSnap.exists() ? Number(countersSnap.data().cashBalance || 0) : 0;
-      const saleSnap = await tx.get(saleRef);
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
+      const [countersSnap, deviceSnap, saleSnap] = await Promise.all([
+        tx.get(countersRef),
+        tx.get(deviceRef),
+        tx.get(saleRef),
+      ]);
+      if (deviceSnap.exists() && deviceSnap.data().status === 'blocked') {
+        throw new Error('تم حظر هذا الجهاز من قبل المسؤول ولا يمكن تنفيذ عمليات منه.');
+      }
       if (!saleSnap.exists()) throw new Error('الفاتورة غير موجودة.');
+      const saleData = saleSnap.data() as Omit<SaleInvoice, 'id'>;
+      if (saleData.status === 'cancelled') {
+        tx.set(opRef, {
+          operationId: opId,
+          operationType: 'sale_cancel',
+          referenceId: sale.id,
+          referenceNumber: saleData.invoiceNumber,
+          employeeId: actor.uid,
+          ...devFields,
+          createdAt: serverTimestamp(),
+        });
+        return;
+      }
 
       const prodSnaps = await Promise.all(
-        sale.items.map((item) => tx.get(doc(db, 'products', item.productId)))
+        saleData.items.map((item) => tx.get(doc(db, 'products', item.productId)))
       );
-      const custSnap = sale.customerId
-        ? await tx.get(doc(db, 'customers', sale.customerId))
+      const custSnap = saleData.customerId
+        ? await tx.get(doc(db, 'customers', saleData.customerId))
         : null;
 
-      const newCashBalance = roundMoney(currentCash - sale.paidAmount);
-      if (countersSnap.exists() && sale.paidAmount > 0) {
+      const currentCash = countersSnap.exists() ? Number(countersSnap.data().cashBalance || 0) : 0;
+      const newCashBalance = roundMoney(currentCash - saleData.paidAmount);
+      if (countersSnap.exists() && saleData.paidAmount > 0) {
         tx.update(countersRef, {
           cashBalance: newCashBalance,
           updatedAt: serverTimestamp(),
@@ -1707,8 +2314,8 @@ export async function cancelSaleInvoice(
         updatedAt: serverTimestamp(),
       });
 
-      for (let i = 0; i < sale.items.length; i++) {
-        const it = sale.items[i];
+      for (let i = 0; i < saleData.items.length; i++) {
+        const it = saleData.items[i];
         const pSnap = prodSnaps[i];
         if (pSnap.exists()) {
           const pData = pSnap.data() as Omit<Product, 'id'>;
@@ -1727,8 +2334,8 @@ export async function cancelSaleInvoice(
             newStock,
             referenceType: 'sale_cancel',
             referenceId: sale.id,
-            referenceNumber: sale.invoiceNumber,
-            reason: `إلغاء فاتورة ${sale.invoiceNumber}: ${truncateText(reason, 180)}`,
+            referenceNumber: saleData.invoiceNumber,
+            reason: `إلغاء فاتورة ${saleData.invoiceNumber}: ${truncateText(reason, 180)}`,
             employeeId: actor.uid,
             employeeName: truncateText(actor.name, FIELD_LIMITS.shortNameMax),
             ...devFields,
@@ -1740,22 +2347,22 @@ export async function cancelSaleInvoice(
       if (custSnap && custSnap.exists()) {
         const cData = custSnap.data() as Omit<Customer, 'id'>;
         tx.update(custSnap.ref, {
-          totalPurchases: Math.max(0, roundMoney(cData.totalPurchases - sale.total)),
-          totalPaid: Math.max(0, roundMoney(cData.totalPaid - sale.paidAmount)),
-          balanceDue: roundMoney(cData.balanceDue - sale.remainingAmount),
+          totalPurchases: Math.max(0, roundMoney(cData.totalPurchases - saleData.total)),
+          totalPaid: Math.max(0, roundMoney(cData.totalPaid - saleData.paidAmount)),
+          balanceDue: roundMoney(cData.balanceDue - saleData.remainingAmount),
           updatedAt: serverTimestamp(),
         });
       }
 
-      if (sale.paidAmount > 0) {
+      if (saleData.paidAmount > 0) {
         tx.set(doc(db, 'cash_transactions', generateDocId('cash')), {
           type: 'out',
           category: 'إلغاء فاتورة',
-          amount: sale.paidAmount,
+          amount: saleData.paidAmount,
           balanceAfter: newCashBalance,
           referenceId: sale.id,
-          referenceNumber: sale.invoiceNumber,
-          description: `عكس تحصيل فاتورة ملغاة ${sale.invoiceNumber}`,
+          referenceNumber: saleData.invoiceNumber,
+          description: `عكس تحصيل فاتورة ملغاة ${saleData.invoiceNumber}`,
           employeeId: actor.uid,
           employeeName: truncateText(actor.name, FIELD_LIMITS.shortNameMax),
           ...devFields,
@@ -1770,11 +2377,29 @@ export async function cancelSaleInvoice(
           'إلغاء فاتورة',
           'sale',
           sale.id,
-          `إلغاء فاتورة ${sale.invoiceNumber} بقيمة ${sale.total} - السبب: ${reason}`
+          `إلغاء فاتورة ${saleData.invoiceNumber} بقيمة ${saleData.total} - السبب: ${reason}`
         )
       );
-    });
+
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'sale_cancel',
+        referenceId: sale.id,
+        referenceNumber: saleData.invoiceNumber,
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, options?.skipQueue);
+
+    return { queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !options?.skipQueue) {
+      return enqueueOfflineCancel();
+    }
+    if (err instanceof Error && (err.message.includes('غير موجود') || err.message.includes('محظور'))) {
+      throw err;
+    }
     handleFirestoreError(err, OperationType.UPDATE, `sales/${sale.id}`);
   }
 }
@@ -1787,17 +2412,20 @@ export async function recordStockAdjustment(
     productName?: string;
     mode: 'in' | 'out' | 'stocktake';
     quantityOrActual: number;
+    expectedStockAtCapture?: number;
     reason: string;
     operationId?: string;
     skipQueue?: boolean;
+    forceApply?: boolean;
+    applyDeltaOnConflict?: boolean;
   }
 ): Promise<{ queued: boolean }> {
   const opId = input.operationId || generateDocId('op');
   const devFields = deviceFieldsFor(actor);
 
-  const enqueueOfflineStock = () => {
+  const enqueueOfflineStock = async () => {
     const tempRef = `OFF-STK-${opId.slice(-4).toUpperCase()}`;
-    enqueuePendingOperation({
+    await enqueuePendingOperation({
       operationId: opId,
       type: 'stock_adjust',
       summary: `تعديل مخزون ${input.productName || input.productId} (${input.quantityOrActual})`,
@@ -1808,8 +2436,13 @@ export async function recordStockAdjustment(
         productName: input.productName || '',
         mode: input.mode,
         quantityOrActual: input.quantityOrActual,
+        expectedStockAtCapture: input.expectedStockAtCapture,
         reason: input.reason,
       },
+      baseState:
+        typeof input.expectedStockAtCapture === 'number'
+          ? { expectedStockAtCapture: input.expectedStockAtCapture }
+          : undefined,
       status: 'pending',
       attempts: 0,
       createdAtIso: new Date().toISOString(),
@@ -1817,7 +2450,7 @@ export async function recordStockAdjustment(
     return { queued: true };
   };
 
-  if (!navigator.onLine && !input.skipQueue) {
+  if (!isAppOnline() && !input.skipQueue) {
     return enqueueOfflineStock();
   }
 
@@ -1826,7 +2459,7 @@ export async function recordStockAdjustment(
   const deviceRef = doc(db, 'devices', actor.deviceId);
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
       const opSnap = await tx.get(opRef);
       if (opSnap.exists()) return;
 
@@ -1847,8 +2480,27 @@ export async function recordStockAdjustment(
         qtyChange = -Math.max(0, input.quantityOrActual);
         newStock = roundMoney(prod.stock + qtyChange);
       } else {
-        newStock = Math.max(0, input.quantityOrActual);
-        qtyChange = roundMoney(newStock - prod.stock);
+        if (
+          input.skipQueue &&
+          typeof input.expectedStockAtCapture === 'number' &&
+          Math.abs(prod.stock - input.expectedStockAtCapture) > 0.001
+        ) {
+          if (input.applyDeltaOnConflict) {
+            const delta = roundMoney(input.quantityOrActual - input.expectedStockAtCapture);
+            qtyChange = delta;
+            newStock = roundMoney(prod.stock + delta);
+          } else if (input.forceApply) {
+            newStock = Math.max(0, input.quantityOrActual);
+            qtyChange = roundMoney(newStock - prod.stock);
+          } else {
+            throw new Error(
+              `تعارض جرد مخزون "${prod.name}": الرصيد عند الجرد كان (${input.expectedStockAtCapture}) وتغير على الخادم إلى (${prod.stock}) بواسطة جهاز آخر، بينما الجرد المسجل (${input.quantityOrActual}).`
+            );
+          }
+        } else {
+          newStock = Math.max(0, input.quantityOrActual);
+          qtyChange = roundMoney(newStock - prod.stock);
+        }
       }
 
       if (newStock < 0) {
@@ -1910,7 +2562,7 @@ export async function recordStockAdjustment(
           updatedAt: serverTimestamp(),
         });
       }
-    });
+    }, input.skipQueue);
     return { queued: false };
   } catch (err) {
     if (isNetworkOrOfflineError(err) && !input.skipQueue) {
@@ -1920,7 +2572,8 @@ export async function recordStockAdjustment(
       err instanceof Error &&
       (err.message.includes('أقل من صفر') ||
         err.message.includes('غير موجود') ||
-        err.message.includes('محظور'))
+        err.message.includes('محظور') ||
+        err.message.includes('تعارض'))
     ) {
       throw err;
     }
@@ -1944,17 +2597,19 @@ export async function recordExpense(
   if (cleanAmount <= 0) throw new Error('يجب أن يكون مبلغ المصروف أكبر من صفر.');
 
   const opId = input.operationId || generateDocId('op');
+  const expId = generateDocId('exp');
   const devFields = deviceFieldsFor(actor);
 
-  const enqueueOfflineExpense = () => {
+  const enqueueOfflineExpense = async () => {
     const tempRef = `OFF-EXP-${opId.slice(-4).toUpperCase()}`;
-    enqueuePendingOperation({
+    await enqueuePendingOperation({
       operationId: opId,
       type: 'expense',
       summary: `مصروف: ${input.title} (${cleanAmount})`,
       localTempRef: tempRef,
       actor,
       payload: {
+        expenseId: expId,
         title: input.title,
         category: input.category,
         amount: cleanAmount,
@@ -1967,17 +2622,16 @@ export async function recordExpense(
     return { queued: true };
   };
 
-  if (!navigator.onLine && !input.skipQueue) {
+  if (!isAppOnline() && !input.skipQueue) {
     return enqueueOfflineExpense();
   }
 
-  const expId = generateDocId('exp');
   const countersRef = doc(db, 'counters', 'main');
   const opRef = doc(db, 'processed_operations', opId);
   const deviceRef = doc(db, 'devices', actor.deviceId);
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
       const opSnap = await tx.get(opRef);
       if (opSnap.exists()) return;
 
@@ -2057,7 +2711,7 @@ export async function recordExpense(
           updatedAt: serverTimestamp(),
         });
       }
-    });
+    }, input.skipQueue);
     return { queued: false };
   } catch (err) {
     if (isNetworkOrOfflineError(err) && !input.skipQueue) {
@@ -2085,17 +2739,19 @@ export async function recordVoucher(
   if (cleanAmount <= 0) throw new Error('يجب أن يكون مبلغ السند أكبر من صفر.');
 
   const opId = input.operationId || generateDocId('op');
+  const voucherId = generateDocId('vch');
   const devFields = deviceFieldsFor(actor);
 
-  const enqueueOfflineVoucher = () => {
+  const enqueueOfflineVoucher = async () => {
     const tempRef = `OFF-VCH-${opId.slice(-4).toUpperCase()}`;
-    enqueuePendingOperation({
+    await enqueuePendingOperation({
       operationId: opId,
       type: 'voucher',
       summary: `${input.type === 'receipt' ? 'سند قبض' : 'سند صرف'} (${cleanAmount}) ${input.partyName ? `- ${input.partyName}` : ''}`,
       localTempRef: tempRef,
       actor,
       payload: {
+        voucherId,
         type: input.type,
         partyType: input.partyType,
         partyId: input.partyId,
@@ -2110,11 +2766,10 @@ export async function recordVoucher(
     return { voucherNumber: tempRef, queued: true };
   };
 
-  if (!navigator.onLine && !input.skipQueue) {
+  if (!isAppOnline() && !input.skipQueue) {
     return enqueueOfflineVoucher();
   }
 
-  const voucherId = generateDocId('vch');
   const countersRef = doc(db, 'counters', 'main');
   const partyCol = input.partyType === 'customer' ? 'customers' : 'suppliers';
   const partyRef = doc(db, partyCol, input.partyId);
@@ -2123,7 +2778,7 @@ export async function recordVoucher(
   let voucherNumber = '';
 
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
       const opSnap = await tx.get(opRef);
       if (opSnap.exists()) {
         voucherNumber = String(opSnap.data().referenceNumber || '');
@@ -2237,7 +2892,7 @@ export async function recordVoucher(
           updatedAt: serverTimestamp(),
         });
       }
-    });
+    }, input.skipQueue);
     return { voucherNumber, queued: false };
   } catch (err) {
     if (isNetworkOrOfflineError(err) && !input.skipQueue) {
@@ -2251,12 +2906,184 @@ export async function recordVoucher(
 }
 
 // ---------------- PENDING QUEUE FLUSHER ----------------
-export async function flushSinglePendingOperation(op: PendingOperation): Promise<void> {
+export async function flushSinglePendingOperation(
+  op: PendingOperation,
+  options?: { forceApply?: boolean; applyDeltaOnConflict?: boolean }
+): Promise<{ referenceId?: string; referenceNumber?: string }> {
   const actor: ActorInfo = op.actor;
   const p = op.payload;
+  const idMap = await localDbService.getIdMap();
+
+  if (op.type === 'product_create') {
+    const res = await createProduct(actor, {
+      productId: String(p.productId || ''),
+      code: typeof p.code === 'string' ? p.code : undefined,
+      barcode: typeof p.barcode === 'string' ? p.barcode : undefined,
+      name: String(p.name || ''),
+      category: String(p.category || 'عام'),
+      description: typeof p.description === 'string' ? p.description : undefined,
+      unit: String(p.unit || 'حبة'),
+      costPrice: Number(p.costPrice || 0),
+      sellPrice: Number(p.sellPrice || 0),
+      stock: Number(p.stock || 0),
+      minStock: Number(p.minStock || 0),
+      operationId: op.operationId,
+      skipQueue: true,
+    });
+    return { referenceId: res.productId, referenceNumber: String(p.code || '') };
+  }
+
+  if (op.type === 'product_update') {
+    const productId = String(p.productId || '');
+    const stubProduct: Product = {
+      id: productId,
+      code: String(p.code || ''),
+      name: String(p.name || ''),
+      category: String(p.category || ''),
+      unit: String(p.unit || 'حبة'),
+      costPrice: Number(op.baseState?.prevCostPrice ?? p.costPrice ?? 0),
+      sellPrice: Number(op.baseState?.prevSellPrice ?? p.sellPrice ?? 0),
+      stock: 0,
+      minStock: Number(p.minStock || 0),
+      isActive: Boolean(p.isActive ?? true),
+      createdBy: actor.uid,
+      createdAt: null,
+      updatedAt: null,
+    };
+    await updateProduct(actor, stubProduct, {
+      barcode: typeof p.barcode === 'string' ? p.barcode : undefined,
+      name: String(p.name || ''),
+      category: String(p.category || ''),
+      description: typeof p.description === 'string' ? p.description : undefined,
+      unit: String(p.unit || 'حبة'),
+      costPrice: Number(p.costPrice || 0),
+      sellPrice: Number(p.sellPrice || 0),
+      minStock: Number(p.minStock || 0),
+      isActive: Boolean(p.isActive ?? true),
+      operationId: op.operationId,
+      skipQueue: true,
+      baseUpdatedAtMs:
+        typeof op.baseState?.baseUpdatedAtMs === 'number'
+          ? op.baseState.baseUpdatedAtMs
+          : null,
+      forceApply: options?.forceApply || op.forceApply || Boolean(p.forceApply),
+    });
+    return { referenceId: productId, referenceNumber: String(p.code || '') };
+  }
+
+  if (op.type === 'product_delete') {
+    const productId = String(p.productId || '');
+    const stubProduct: Product = {
+      id: productId,
+      code: String(p.code || ''),
+      name: String(p.name || ''),
+      category: 'عام',
+      unit: 'حبة',
+      costPrice: 0,
+      sellPrice: 0,
+      stock: 0,
+      minStock: 0,
+      isActive: true,
+      createdBy: actor.uid,
+      createdAt: null,
+      updatedAt: null,
+    };
+    await deleteProduct(actor, stubProduct, {
+      operationId: op.operationId,
+      skipQueue: true,
+    });
+    return { referenceId: productId };
+  }
+
+  if (op.type === 'customer_create') {
+    const created = await createCustomer(actor, {
+      customerId: String(p.customerId || ''),
+      customerCode: typeof p.customerCode === 'string' ? p.customerCode : undefined,
+      name: String(p.name || ''),
+      phone: typeof p.phone === 'string' ? p.phone : undefined,
+      address: typeof p.address === 'string' ? p.address : undefined,
+      notes: typeof p.notes === 'string' ? p.notes : undefined,
+      operationId: op.operationId,
+      skipQueue: true,
+    });
+    return { referenceId: created.id, referenceNumber: created.customerCode };
+  }
+
+  if (op.type === 'customer_update') {
+    const customerId = String(p.customerId || '');
+    const stubCustomer: Customer = {
+      id: customerId,
+      customerCode: String(p.customerCode || ''),
+      name: String(p.name || ''),
+      totalPurchases: 0,
+      totalPaid: 0,
+      balanceDue: 0,
+      createdBy: actor.uid,
+      createdAt: null,
+      updatedAt: null,
+    };
+    await updateCustomer(actor, stubCustomer, {
+      name: String(p.name || ''),
+      phone: typeof p.phone === 'string' ? p.phone : undefined,
+      address: typeof p.address === 'string' ? p.address : undefined,
+      notes: typeof p.notes === 'string' ? p.notes : undefined,
+      operationId: op.operationId,
+      skipQueue: true,
+      baseUpdatedAtMs:
+        typeof op.baseState?.baseUpdatedAtMs === 'number'
+          ? op.baseState.baseUpdatedAtMs
+          : null,
+      forceApply: options?.forceApply || op.forceApply || Boolean(p.forceApply),
+    });
+    return { referenceId: customerId };
+  }
+
+  if (op.type === 'supplier_create') {
+    const id = await createSupplier(actor, {
+      supplierId: String(p.supplierId || ''),
+      supplierCode: typeof p.supplierCode === 'string' ? p.supplierCode : undefined,
+      name: String(p.name || ''),
+      phone: typeof p.phone === 'string' ? p.phone : undefined,
+      address: typeof p.address === 'string' ? p.address : undefined,
+      notes: typeof p.notes === 'string' ? p.notes : undefined,
+      operationId: op.operationId,
+      skipQueue: true,
+    });
+    return { referenceId: id };
+  }
+
+  if (op.type === 'supplier_update') {
+    const supplierId = String(p.supplierId || '');
+    const stubSupplier: Supplier = {
+      id: supplierId,
+      supplierCode: String(p.supplierCode || ''),
+      name: String(p.name || ''),
+      totalPurchases: 0,
+      totalPaid: 0,
+      balanceDue: 0,
+      createdBy: actor.uid,
+      createdAt: null,
+      updatedAt: null,
+    };
+    await updateSupplier(actor, stubSupplier, {
+      name: String(p.name || ''),
+      phone: typeof p.phone === 'string' ? p.phone : undefined,
+      address: typeof p.address === 'string' ? p.address : undefined,
+      notes: typeof p.notes === 'string' ? p.notes : undefined,
+      operationId: op.operationId,
+      skipQueue: true,
+      baseUpdatedAtMs:
+        typeof op.baseState?.baseUpdatedAtMs === 'number'
+          ? op.baseState.baseUpdatedAtMs
+          : null,
+      forceApply: options?.forceApply || op.forceApply || Boolean(p.forceApply),
+    });
+    return { referenceId: supplierId };
+  }
 
   if (op.type === 'sale') {
-    await executeSale(actor, {
+    const res = await executeSale(actor, {
+      saleId: typeof p.saleId === 'string' ? p.saleId : undefined,
       customer: (p.customer as Pick<Customer, 'id' | 'customerCode' | 'name'> | null) || null,
       items: (p.items as SaleInputItem[]) || [],
       discount: Number(p.discount || 0),
@@ -2266,11 +3093,12 @@ export async function flushSinglePendingOperation(op: PendingOperation): Promise
       operationId: op.operationId,
       skipQueue: true,
     });
-    return;
+    return { referenceId: res.saleId, referenceNumber: res.invoiceNumber };
   }
 
   if (op.type === 'purchase') {
-    await executePurchase(actor, {
+    const res = await executePurchase(actor, {
+      purchaseId: typeof p.purchaseId === 'string' ? p.purchaseId : undefined,
       supplier: p.supplier as Pick<Supplier, 'id' | 'supplierCode' | 'name'>,
       items: (p.items as {
         productId: string;
@@ -2284,25 +3112,27 @@ export async function flushSinglePendingOperation(op: PendingOperation): Promise
       operationId: op.operationId,
       skipQueue: true,
     });
-    return;
+    return { referenceId: res.purchaseId };
   }
 
   if (op.type === 'return') {
-    const saleId = String(p.saleId || '');
-    const saleSnap = await getDoc(doc(db, 'sales', saleId));
+    const rawSaleId = String(p.saleId || '');
+    const resolvedSaleId = idMap[rawSaleId]?.referenceId || rawSaleId;
+    const saleSnap = await getDoc(doc(db, 'sales', resolvedSaleId));
     if (!saleSnap.exists()) {
       throw new Error('الفاتورة الأصلية غير موجودة للمرتجع.');
     }
     const sale = { id: saleSnap.id, ...(saleSnap.data() as Omit<SaleInvoice, 'id'>) };
     const existingRetSnaps = await getDocs(
-      query(collection(db, 'returns'), where('saleId', '==', saleId))
+      query(collection(db, 'returns'), where('saleId', '==', resolvedSaleId))
     );
     const existingReturns: SalesReturn[] = existingRetSnaps.docs.map((d) => ({
       id: d.id,
       ...(d.data() as Omit<SalesReturn, 'id'>),
     }));
 
-    await executeSalesReturn(actor, {
+    const res = await executeSalesReturn(actor, {
+      returnId: typeof p.returnId === 'string' ? p.returnId : undefined,
       sale,
       existingReturns,
       itemsToReturn: (p.itemsToReturn as { productId: string; qty: number }[]) || [],
@@ -2312,7 +3142,22 @@ export async function flushSinglePendingOperation(op: PendingOperation): Promise
       operationId: op.operationId,
       skipQueue: true,
     });
-    return;
+    return { referenceId: res.returnId };
+  }
+
+  if (op.type === 'sale_cancel') {
+    const rawSaleId = String(p.saleId || '');
+    const resolvedSaleId = idMap[rawSaleId]?.referenceId || rawSaleId;
+    const saleSnap = await getDoc(doc(db, 'sales', resolvedSaleId));
+    if (!saleSnap.exists()) {
+      throw new Error('الفاتورة المطلوب إلغاؤها غير موجودة على الخادم.');
+    }
+    const sale = { id: saleSnap.id, ...(saleSnap.data() as Omit<SaleInvoice, 'id'>) };
+    await cancelSaleInvoice(actor, sale, String(p.reason || 'إلغاء فاتورة'), {
+      operationId: op.operationId,
+      skipQueue: true,
+    });
+    return { referenceId: resolvedSaleId, referenceNumber: sale.invoiceNumber };
   }
 
   if (op.type === 'stock_adjust') {
@@ -2321,11 +3166,20 @@ export async function flushSinglePendingOperation(op: PendingOperation): Promise
       productName: typeof p.productName === 'string' ? p.productName : undefined,
       mode: (p.mode as 'in' | 'out' | 'stocktake') || 'in',
       quantityOrActual: Number(p.quantityOrActual || 0),
+      expectedStockAtCapture:
+        typeof p.expectedStockAtCapture === 'number'
+          ? p.expectedStockAtCapture
+          : typeof op.baseState?.expectedStockAtCapture === 'number'
+          ? op.baseState.expectedStockAtCapture
+          : undefined,
       reason: String(p.reason || ''),
       operationId: op.operationId,
       skipQueue: true,
+      forceApply: options?.forceApply || op.forceApply || Boolean(p.forceApply),
+      applyDeltaOnConflict:
+        options?.applyDeltaOnConflict || Boolean(p.applyDeltaOnConflict),
     });
-    return;
+    return { referenceId: String(p.productId || '') };
   }
 
   if (op.type === 'expense') {
@@ -2337,11 +3191,11 @@ export async function flushSinglePendingOperation(op: PendingOperation): Promise
       operationId: op.operationId,
       skipQueue: true,
     });
-    return;
+    return { referenceId: op.operationId };
   }
 
   if (op.type === 'voucher') {
-    await recordVoucher(actor, {
+    const res = await recordVoucher(actor, {
       type: (p.type as 'receipt' | 'payment') || 'receipt',
       partyType: (p.partyType as 'customer' | 'supplier') || 'customer',
       partyId: String(p.partyId || ''),
@@ -2351,7 +3205,21 @@ export async function flushSinglePendingOperation(op: PendingOperation): Promise
       operationId: op.operationId,
       skipQueue: true,
     });
+    return { referenceNumber: res.voucherNumber };
   }
+
+  if (op.type === 'cash_adjust') {
+    await adjustCashBoxManual(
+      actor,
+      Number(p.amount || 0),
+      (p.type as 'in' | 'out') || 'in',
+      String(p.description || 'حركة صندوق يدوية'),
+      { operationId: op.operationId, skipQueue: true }
+    );
+    return { referenceId: 'main' };
+  }
+
+  return {};
 }
 
 // ---------------- STAFF, INVITES & SETTINGS ----------------
@@ -2572,15 +3440,49 @@ export async function adjustCashBoxManual(
   actor: ActorInfo,
   amount: number,
   type: 'in' | 'out',
-  description: string
-): Promise<void> {
+  description: string,
+  options?: { operationId?: string; skipQueue?: boolean }
+): Promise<{ queued: boolean }> {
   const cleanAmount = roundMoney(Math.max(0, amount));
   if (cleanAmount <= 0) throw new Error('يرجى إدخال مبلغ صحيح.');
-  const countersRef = doc(db, 'counters', 'main');
+
+  const opId = options?.operationId || generateDocId('op');
+  const cashTxId = generateDocId('cash');
   const devFields = deviceFieldsFor(actor);
 
+  const enqueueOfflineCashAdjust = async () => {
+    const tempRef = `OFF-CSH-${opId.slice(-4).toUpperCase()}`;
+    await enqueuePendingOperation({
+      operationId: opId,
+      type: 'cash_adjust',
+      summary: `${type === 'in' ? 'إيداع صندوق' : 'سحب صندوق'}: ${cleanAmount} - ${description}`,
+      localTempRef: tempRef,
+      actor,
+      payload: {
+        cashTxId,
+        type,
+        amount: cleanAmount,
+        description,
+      },
+      status: 'pending',
+      attempts: 0,
+      createdAtIso: new Date().toISOString(),
+    });
+    return { queued: true };
+  };
+
+  if (!isAppOnline() && !options?.skipQueue) {
+    return enqueueOfflineCashAdjust();
+  }
+
+  const countersRef = doc(db, 'counters', 'main');
+  const opRef = doc(db, 'processed_operations', opId);
+
   try {
-    await runTransaction(db, async (tx) => {
+    await runTransactionWithTimeout(async (tx) => {
+      const opSnap = await tx.get(opRef);
+      if (opSnap.exists()) return;
+
       const cSnap = await tx.get(countersRef);
       const currentCash = cSnap.exists() ? Number(cSnap.data().cashBalance || 0) : 0;
       const nextCash =
@@ -2605,8 +3507,7 @@ export async function adjustCashBoxManual(
           updatedAt: serverTimestamp(),
         });
       }
-      const txId = generateDocId('cash');
-      tx.set(doc(db, 'cash_transactions', txId), {
+      tx.set(doc(db, 'cash_transactions', cashTxId), {
         type,
         category: type === 'in' ? 'إيداع يدوي' : 'سحب يدوي',
         amount: cleanAmount,
@@ -2627,8 +3528,20 @@ export async function adjustCashBoxManual(
           `${type === 'in' ? 'إيداع' : 'سحب'} ${cleanAmount} - ${description}`
         )
       );
-    });
+      tx.set(opRef, {
+        operationId: opId,
+        operationType: 'cash_adjust',
+        referenceId: 'main',
+        employeeId: actor.uid,
+        ...devFields,
+        createdAt: serverTimestamp(),
+      });
+    }, options?.skipQueue);
+    return { queued: false };
   } catch (err) {
+    if (isNetworkOrOfflineError(err) && !options?.skipQueue) {
+      return enqueueOfflineCashAdjust();
+    }
     handleFirestoreError(err, OperationType.UPDATE, 'counters/main');
   }
 }

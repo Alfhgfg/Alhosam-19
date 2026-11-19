@@ -112,9 +112,24 @@ export const CustomersView: React.FC = () => {
     setSuccessMsg(null);
     try {
       if (editingCustomer) {
-        await updateCustomer(actorInfo, editingCustomer, { name, phone, address, notes });
+        const res = await updateCustomer(actorInfo, editingCustomer, {
+          name,
+          phone,
+          address,
+          notes,
+        });
+        setSuccessMsg(
+          res.queued
+            ? `تم حفظ تعديل العميل "${name}" محلياً وسيُزامن فور عودة الاتصال.`
+            : `تم تحديث بيانات العميل "${name}" بنجاح.`
+        );
       } else {
-        await createCustomer(actorInfo, { name, phone, address, notes });
+        const res = await createCustomer(actorInfo, { name, phone, address, notes });
+        setSuccessMsg(
+          res.queued
+            ? `تم حفظ العميل الجديد "${name}" محلياً وسيُزامن فور عودة الاتصال.`
+            : `تم تسجيل العميل "${name}" بنجاح.`
+        );
       }
       setFormOpen(false);
     } catch (err) {

@@ -73,8 +73,10 @@ export const InventoryView: React.FC = () => {
     try {
       const result = await recordStockAdjustment(actorInfo, {
         productId: selectedProduct.id,
+        productName: selectedProduct.name,
         mode: adjustMode,
         quantityOrActual: Number(qtyValue) || 0,
+        expectedStockAtCapture: selectedProduct.stock,
         reason: reason.trim() || 'جرد دوري للمخزون',
       });
       setFeedback({

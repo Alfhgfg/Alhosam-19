@@ -383,12 +383,30 @@ export type PendingOperationType =
   | 'return'
   | 'voucher'
   | 'expense'
-  | 'stock_adjust';
+  | 'stock_adjust'
+  | 'cash_adjust'
+  | 'product_create'
+  | 'product_update'
+  | 'product_delete'
+  | 'customer_create'
+  | 'customer_update'
+  | 'supplier_create'
+  | 'supplier_update'
+  | 'sale_cancel';
 
-export type PendingOperationStatus = 'pending' | 'syncing' | 'conflict';
+export type PendingOperationStatus = 'pending' | 'syncing' | 'conflict' | 'synced';
+
+export type LocalDbEngine = 'sqlite' | 'indexeddb' | 'memory';
+
+export type ConflictResolutionStrategy =
+  | 'retry'
+  | 'force_apply'
+  | 'apply_delta'
+  | 'discard';
 
 export interface PendingOperation {
   operationId: string;
+  seq?: number;
   type: PendingOperationType;
   summary: string;
   localTempRef: string;
@@ -400,10 +418,34 @@ export interface PendingOperation {
     deviceName: string;
   };
   payload: Record<string, unknown>;
+  baseState?: Record<string, unknown>;
   status: PendingOperationStatus;
   errorMessage?: string;
   attempts: number;
   createdAtIso: string;
+  syncedAtIso?: string;
+  resolvedReferenceId?: string;
+  resolvedReferenceNumber?: string;
+  forceApply?: boolean;
+}
+
+export interface SyncMetaState {
+  lastSuccessfulSyncIso: string | null;
+  lastSyncError: string | null;
+  totalSyncedCount: number;
+}
+
+export interface SyncStatusSummary {
+  isOnline: boolean;
+  systemMode: 'online' | 'offline';
+  localDbEngine: LocalDbEngine;
+  pendingCount: number;
+  conflictCount: number;
+  syncedCount: number;
+  totalSyncedEver: number;
+  lastSuccessfulSyncIso: string | null;
+  lastSyncError: string | null;
+  isSyncing: boolean;
 }
 
 export type NavSection =

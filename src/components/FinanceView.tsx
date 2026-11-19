@@ -101,7 +101,7 @@ export const FinanceView: React.FC = () => {
     setSubmitting(true);
     setFeedback(null);
     try {
-      await adjustCashBoxManual(
+      const result = await adjustCashBoxManual(
         actorInfo,
         Number(cashAdjAmt) || 0,
         cashAdjType,
@@ -109,7 +109,12 @@ export const FinanceView: React.FC = () => {
       );
       setCashAdjAmt('');
       setCashAdjDesc('');
-      setFeedback({ type: 'ok', text: 'تم تحديث رصيد الصندوق النقدي بنجاح.' });
+      setFeedback({
+        type: 'ok',
+        text: result.queued
+          ? 'تم حفظ حركة الصندوق محلياً وتحديث الرصيد وسيُزامن فور عودة الاتصال.'
+          : 'تم تحديث رصيد الصندوق النقدي بنجاح.',
+      });
     } catch (err) {
       setFeedback({
         type: 'err',

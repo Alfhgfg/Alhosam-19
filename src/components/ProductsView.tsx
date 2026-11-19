@@ -38,6 +38,7 @@ export const ProductsView: React.FC = () => {
 
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -93,10 +94,11 @@ export const ProductsView: React.FC = () => {
     e.preventDefault();
     if (!actorInfo) return;
     setErrorMsg(null);
+    setSuccessMsg(null);
     setSaving(true);
     try {
       if (editingProduct) {
-        await updateProduct(actorInfo, editingProduct, {
+        const res = await updateProduct(actorInfo, editingProduct, {
           barcode,
           name,
           category,
@@ -107,8 +109,11 @@ export const ProductsView: React.FC = () => {
           minStock: Number(minStock) || 0,
           isActive,
         });
+        if (res.queued) {
+          setSuccessMsg(`تم حفظ تعديل الصنف "${name}" محلياً وسيُزامن فور عودة الاتصال.`);
+        }
       } else {
-        await createProduct(actorInfo, {
+        const res = await createProduct(actorInfo, {
           code: autoCode ? '' : code,
           barcode,
           name,
@@ -120,6 +125,9 @@ export const ProductsView: React.FC = () => {
           stock: Number(stock) || 0,
           minStock: Number(minStock) || 0,
         });
+        if (res.queued) {
+          setSuccessMsg(`تم حفظ الصنف الجديد "${name}" محلياً وسيُزامن فور عودة الاتصال.`);
+        }
       }
       setModalOpen(false);
     } catch (err) {
@@ -131,8 +139,13 @@ export const ProductsView: React.FC = () => {
 
   const handleDelete = async (p: Product) => {
     if (!actorInfo || !isAdmin) return;
+    setErrorMsg(null);
+    setSuccessMsg(null);
     try {
-      await deleteProduct(actorInfo, p);
+      const res = await deleteProduct(actorInfo, p);
+      if (res.queued) {
+        setSuccessMsg(`تم جدولة حذف الصنف "${p.name}" محلياً وسيُزامن فور عودة الاتصال.`);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'تعذر حذف الصنف.');
     }
@@ -157,6 +170,15 @@ export const ProductsView: React.FC = () => {
           </button>
         )}
       </div>
+
+      {successMsg && (
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between gap-2">
+          <span>{successMsg}</span>
+          <button type="button" onClick={() => setSuccessMsg(null)} className="cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">

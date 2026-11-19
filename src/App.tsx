@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
 import {
-  AlertCircle,
   BarChart3,
   Bell,
   Boxes,
@@ -18,10 +17,10 @@ import {
   Smartphone,
   Store,
   Tablet,
-  Trash2,
   Truck,
   Users,
   Wallet,
+  Wifi,
   WifiOff,
   X,
 } from 'lucide-react';
@@ -39,36 +38,19 @@ import { ReportsView } from './components/ReportsView';
 import { ReturnsView } from './components/ReturnsView';
 import { StaffAuditView } from './components/StaffAuditView';
 import { SuppliersPurchasesView } from './components/SuppliersPurchasesView';
-import type { NavSection, PendingOperationType } from './types';
+import { SyncManagerModal } from './components/SyncManagerModal';
+import type { NavSection } from './types';
 import {
   deviceTypeLabel,
   isAllowedDeviceName,
   REQUIRED_DEVICE_NAME,
 } from './utils/device';
-import { formatDateTime } from './utils/format';
 
 interface NavItem {
   id: NavSection;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   visible: boolean;
-}
-
-function pendingTypeLabel(t: PendingOperationType): string {
-  switch (t) {
-    case 'sale':
-      return 'فاتورة مبيعات';
-    case 'purchase':
-      return 'فاتورة مشتريات';
-    case 'return':
-      return 'مرتجع عميل';
-    case 'voucher':
-      return 'سند قبض/صرف';
-    case 'expense':
-      return 'مصروف تشغيلي';
-    case 'stock_adjust':
-      return 'تعديل/جرد مخزون';
-  }
 }
 
 const MainShell: React.FC = () => {
@@ -93,11 +75,9 @@ const MainShell: React.FC = () => {
     isSyncingQueue,
     syncNotice,
     recentSaleAlert,
+    syncStatus,
     dismissSyncNotice,
     dismissSaleAlert,
-    flushPendingQueue,
-    retryPendingOperation,
-    discardPendingOperation,
   } = useStoreData();
 
   const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
@@ -398,41 +378,41 @@ const MainShell: React.FC = () => {
               <span className="truncate">{currentDeviceName}</span>
             </button>
 
-            {pendingOperations.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setQueueModalOpen(true)}
-                className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border cursor-pointer whitespace-nowrap ${
-                  conflictCount > 0
-                    ? 'bg-red-50 border-red-200 text-red-700'
-                    : 'bg-amber-50 border-amber-200 text-amber-800'
-                }`}
-              >
-                {isSyncingQueue ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <CloudOff className="w-3.5 h-3.5" />
-                )}
-                <span>
-                  معلقة ({pendingOperations.length})
-                  {conflictCount > 0 ? ` · تعارض (${conflictCount})` : ''}
-                </span>
-              </button>
-            )}
-
-            {!isOnline && (
-              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg whitespace-nowrap">
-                <WifiOff className="w-3.5 h-3.5" />
-                <span>غير متصل</span>
-              </div>
-            )}
-
-            {isOnline && hasPendingSync && pendingOperations.length === 0 && (
-              <div className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg whitespace-nowrap">
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                <span>جاري المزامنة</span>
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => setQueueModalOpen(true)}
+              className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border cursor-pointer whitespace-nowrap ${
+                conflictCount > 0
+                  ? 'bg-red-50 border-red-200 text-red-700'
+                  : !isOnline || pendingOperations.length > 0
+                  ? 'bg-amber-50 border-amber-200 text-amber-800'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              }`}
+              title="فتح مركز إدارة المزامنة والعمل دون اتصال"
+            >
+              {isSyncingQueue ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+              ) : !isOnline ? (
+                <WifiOff className="w-3.5 h-3.5 shrink-0" />
+              ) : pendingOperations.length > 0 ? (
+                <CloudOff className="w-3.5 h-3.5 shrink-0" />
+              ) : (
+                <Wifi className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span>
+                {!isOnline
+                  ? pendingOperations.length > 0
+                    ? `دون اتصال (${pendingOperations.length})`
+                    : 'دون اتصال'
+                  : conflictCount > 0
+                  ? `تعارض (${conflictCount})`
+                  : pendingOperations.length > 0
+                  ? `مزامنة (${pendingOperations.length})`
+                  : syncStatus.isSyncing || hasPendingSync
+                  ? 'جاري المزامنة'
+                  : 'متصل · متزامن'}
+              </span>
+            </button>
 
             {currentNav.id !== 'pos' && (
               <button
@@ -444,6 +424,24 @@ const MainShell: React.FC = () => {
             )}
           </div>
         </header>
+
+        {!isOnline && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 lg:px-6 py-2 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-2 no-print">
+            <div className="flex items-center gap-2">
+              <WifiOff className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+              <span>
+                النظام يعمل الآن <strong>دون إنترنت</strong> — جميع المبيعات والعمليات تُحفظ محلياً في قاعدة البيانات الدائمة وستُرحّل تلقائياً فور عودة الاتصال.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setQueueModalOpen(true)}
+              className="font-semibold text-amber-900 underline cursor-pointer whitespace-nowrap"
+            >
+              حالة المزامنة ({pendingOperations.length} معلقة)
+            </button>
+          </div>
+        )}
 
         {/* Live Cloud Alerts */}
         {(recentSaleAlert || syncNotice) && (
@@ -596,126 +594,7 @@ const MainShell: React.FC = () => {
         </div>
       )}
 
-      {/* Pending Offline Queue Modal */}
-      {queueModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto no-print">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-2xl overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  العمليات المعلقة بانتظار المزامنة ({pendingOperations.length})
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  تُحفظ العمليات عند انقطاع الإنترنت وتُعالج تلقائياً بترتيب التسجيل دون تكرار عند عودة الاتصال
-                </p>
-              </div>
-              <button
-                onClick={() => setQueueModalOpen(false)}
-                className="p-1.5 text-slate-500 hover:text-slate-900 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-4">
-              {pendingOperations.length === 0 ? (
-                <div className="py-10 text-center text-sm text-slate-500">
-                  جميع العمليات متزامنة مع السحابة ولا توجد عمليات معلقة.
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl max-h-96 overflow-y-auto">
-                  {pendingOperations.map((op) => (
-                    <div key={op.operationId} className="p-4 space-y-2 text-xs">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="font-semibold text-slate-900">
-                          {pendingTypeLabel(op.type)} ·{' '}
-                          <span className="font-mono-num text-emerald-700">
-                            {op.localTempRef}
-                          </span>
-                        </div>
-                        <span
-                          className={`font-semibold px-2 py-0.5 rounded-md ${
-                            op.status === 'conflict'
-                              ? 'bg-red-50 text-red-700'
-                              : op.status === 'syncing'
-                              ? 'bg-blue-50 text-blue-700'
-                              : 'bg-amber-50 text-amber-800'
-                          }`}
-                        >
-                          {op.status === 'conflict'
-                            ? 'تعارض يتطلب معالجة'
-                            : op.status === 'syncing'
-                            ? 'جاري المزامنة...'
-                            : 'بانتظار الاتصال'}
-                        </span>
-                      </div>
-                      <div className="text-slate-700">{op.summary}</div>
-                      <div className="text-slate-400">
-                        {formatDateTime(op.createdAtIso)} · الموظف: {op.actor.name} · الجهاز:{' '}
-                        {op.actor.deviceName}
-                      </div>
-                      {op.errorMessage && (
-                        <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-start gap-2">
-                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                          <span>{op.errorMessage}</span>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2 pt-1">
-                        {isOnline && (
-                          <button
-                            type="button"
-                            onClick={() => retryPendingOperation(op.operationId)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-700 text-white rounded-lg cursor-pointer"
-                          >
-                            <RefreshCw className="w-3 h-3" />
-                            <span>إعادة المزامنة</span>
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => discardPendingOperation(op.operationId)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 text-red-700 bg-red-50 border border-red-200 rounded-lg cursor-pointer"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                          <span>حذف من الانتظار</span>
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                <span className="text-xs text-slate-500">
-                  الحالة الحالية: {isOnline ? 'متصل بالسحابة' : 'غير متصل بالإنترنت'}
-                </span>
-                <div className="flex items-center gap-2">
-                  {isOnline && pendingOperations.length > 0 && (
-                    <button
-                      type="button"
-                      disabled={isSyncingQueue}
-                      onClick={() => flushPendingQueue()}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-xl cursor-pointer"
-                    >
-                      <RefreshCw
-                        className={`w-3.5 h-3.5 ${isSyncingQueue ? 'animate-spin' : ''}`}
-                      />
-                      <span>مزامنة الكل الآن</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setQueueModalOpen(false)}
-                    className="px-4 py-2 text-xs border border-slate-200 rounded-xl cursor-pointer"
-                  >
-                    إغلاق
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <SyncManagerModal open={queueModalOpen} onClose={() => setQueueModalOpen(false)} />
     </div>
   );
 };

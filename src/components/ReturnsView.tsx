@@ -114,10 +114,12 @@ export const ReturnsView: React.FC = () => {
     setProcessing(true);
     setFeedback(null);
     try {
-      await cancelSaleInvoice(actorInfo, sale, reason.trim());
+      const result = await cancelSaleInvoice(actorInfo, sale, reason.trim());
       setFeedback({
         type: 'ok',
-        text: `تم إلغاء الفاتورة ${sale.invoiceNumber} وإرجاع الكميات للمخزون وعكس المبالغ.`,
+        text: result.queued
+          ? `تم حفظ إلغاء الفاتورة ${sale.invoiceNumber} وإرجاع الكميات محلياً وسيُزامن فور عودة الاتصال.`
+          : `تم إلغاء الفاتورة ${sale.invoiceNumber} وإرجاع الكميات للمخزون وعكس المبالغ.`,
       });
       setSelectedSale(null);
     } catch (err) {

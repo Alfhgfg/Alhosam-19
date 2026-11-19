@@ -37,6 +37,8 @@ import {
   renameDeviceRecord,
   type ActorInfo,
 } from '../services/accountingService';
+import { localDbService } from '../services/localDbService';
+import { isAppOnline } from '../services/offlineQueueService';
 import {
   ADMIN_PERMISSIONS,
   DEFAULT_EMPLOYEE_PERMISSIONS,
@@ -216,6 +218,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     const currentDev = getLocalDeviceIdentity();
     setDeviceIdentity(currentDev);
 
+    // Hydrate cached device record immediately for offline cold start
+    void localDbService
+      .getAuthCache<DeviceRecord>(`device_${currentDev.deviceId}`)
+      .then((cachedDev) => {
+        if (authSeqRef.current !== seq || !cachedDev) return;
+        setDeviceRecord((prev) => prev || cachedDev);
+      })
+      .catch(() => {});
+
     // Attach real-time device status listener immediately (never blocks navigation)
     unsubDeviceRef.current = onSnapshot(
       doc(db, 'devices', currentDev.deviceId),
@@ -227,6 +238,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
             ...(devSnap.data() as Omit<DeviceRecord, 'id'>),
           };
           setDeviceRecord(d);
+          void localDbService.setAuthCache(`device_${currentDev.deviceId}`, d).catch(() => {});
           if (d.deviceName) {
             if (isAllowedDeviceName(d.deviceName)) {
               const synced = saveDeviceName(d.deviceName);
@@ -237,14 +249,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
               // Automatically normalize device name to REQUIRED_DEVICE_NAME
               const clean = saveDeviceName(REQUIRED_DEVICE_NAME);
               setDeviceIdentity((prev) => ({ ...prev, deviceName: clean }));
-              void updateDoc(doc(db, 'devices', currentDev.deviceId), {
-                deviceName: REQUIRED_DEVICE_NAME,
-                updatedAt: serverTimestamp(),
-              }).catch(() => {});
+              if (isAppOnline()) {
+                void updateDoc(doc(db, 'devices', currentDev.deviceId), {
+                  deviceName: REQUIRED_DEVICE_NAME,
+                  updatedAt: serverTimestamp(),
+                }).catch(() => {});
+              }
             }
           }
         } else {
           setDeviceRecord(null);
+          void localDbService.setAuthCache(`device_${currentDev.deviceId}`, null).catch(() => {});
         }
       },
       (err) => {
@@ -252,22 +267,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     );
 
+    let hasResolvedProfile = false;
+
     // If this is the verified bootstrap admin, grant immediate entry to the Home shell
     // and hydrate/initialize Firestore documents in the background without blocking UI.
     if (isBootstrap) {
-      setProfile((prev) => (prev && prev.uid === user.uid ? prev : buildFallbackBootstrapAdminProfile(user)));
+      hasResolvedProfile = true;
+      setProfile((prev) => {
+        const next = prev && prev.uid === user.uid ? prev : buildFallbackBootstrapAdminProfile(user);
+        void localDbService.setAuthCache(`profile_${user.uid}`, next).catch(() => {});
+        return next;
+      });
       setLoading(false);
     } else {
       setLoading(true);
-      // Try fast local cache first so returning users never wait on network
+      // 1. Check durable local SQLite/IndexedDB auth cache first for instant offline boot
+      try {
+        const persistedProfile = await localDbService.getAuthCache<UserProfile>(
+          `profile_${user.uid}`
+        );
+        if (authSeqRef.current !== seq) return;
+        if (persistedProfile && persistedProfile.uid === user.uid) {
+          hasResolvedProfile = true;
+          setProfile(persistedProfile);
+          setLoading(false);
+        }
+      } catch {
+        // Ignore cache read error
+      }
+
+      // 2. Also check Firestore local cache
       try {
         const cachedSnap = await getDocFromCache(userRef);
         if (authSeqRef.current !== seq) return;
         if (cachedSnap.exists()) {
-          setProfile({
+          const cachedProf: UserProfile = {
             id: cachedSnap.id,
             ...(cachedSnap.data() as Omit<UserProfile, 'id'>),
-          });
+          };
+          hasResolvedProfile = true;
+          setProfile(cachedProf);
+          void localDbService.setAuthCache(`profile_${user.uid}`, cachedProf).catch(() => {});
           setLoading(false);
         }
       } catch {
@@ -282,7 +322,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         if (authSeqRef.current !== seq) return;
         if (snap.exists()) {
           const data = snap.data() as Omit<UserProfile, 'id'>;
-          setProfile({ id: snap.id, ...data });
+          const resolved: UserProfile = { id: snap.id, ...data };
+          hasResolvedProfile = true;
+          setProfile(resolved);
+          setAuthError(null);
+          void localDbService.setAuthCache(`profile_${user.uid}`, resolved).catch(() => {});
           setLoading(false);
         } else if (isBootstrap) {
           setProfile((prev) => prev || buildFallbackBootstrapAdminProfile(user));
@@ -291,13 +335,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       },
       (err) => {
         if (authSeqRef.current !== seq) return;
-        console.error('[AlHussamAuth] User profile listener error:', err);
-        if (!isBootstrap) {
+        console.warn('[AlHussamAuth] User profile listener notice:', err);
+        if (!isBootstrap && !hasResolvedProfile) {
           setAuthError('تعذر مزامنة ملف الصلاحيات من قاعدة البيانات. يرجى المحاولة مرة أخرى.');
         }
         setLoading(false);
       }
     );
+
+    if (!isAppOnline() && hasResolvedProfile) {
+      return;
+    }
 
     // Run Firestore user creation / bootstrap setup safely (with timeout for non-admin first login)
     try {
@@ -419,9 +467,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       } else {
         const existingData = userSnap.data() as Omit<UserProfile, 'id'>;
+        const resolvedExisting: UserProfile = { id: userSnap.id, ...existingData };
+        hasResolvedProfile = true;
         if (authSeqRef.current === seq) {
-          setProfile({ id: userSnap.id, ...existingData });
+          setProfile(resolvedExisting);
         }
+        void localDbService.setAuthCache(`profile_${user.uid}`, resolvedExisting).catch(() => {});
 
         if (isBootstrap) {
           const adminMarkerSnap = await getDoc(doc(db, 'admins', user.uid));
@@ -480,8 +531,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     } catch (err) {
       if (authSeqRef.current !== seq) return;
-      console.error('[AlHussamAuth] Auth bootstrap error:', err);
-      if (!isBootstrap) {
+      console.warn('[AlHussamAuth] Auth bootstrap offline/timeout notice:', err);
+      if (!isBootstrap && !hasResolvedProfile) {
         setAuthError(
           'تم تسجيل الدخول بحساب Google، لكن تعذر الاتصال بقاعدة البيانات لإتمام التحقق. تأكد من الاتصال بالإنترنت ثم اضغط إعادة المحاولة.'
         );
@@ -546,7 +597,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Register/heartbeat device in the background once the user is authorized
   useEffect(() => {
-    if (!firebaseUser || !isActiveStaff) return;
+    if (!firebaseUser || !isActiveStaff || !isAppOnline()) return;
     const roleForDev: 'admin' | 'employee' = isAdmin ? 'admin' : 'employee';
     const sessionKey = `${firebaseUser.uid}:${roleForDev}`;
     if (registeredSessionKeyRef.current === sessionKey) return;
@@ -564,7 +615,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       userRole: roleForDev,
     })
       .then((reg) => {
-        if (reg) setDeviceRecord(reg);
+        if (reg) {
+          setDeviceRecord(reg);
+          void localDbService.setAuthCache(`device_${dev.deviceId}`, reg).catch(() => {});
+        }
       })
       .catch((err) => {
         console.warn('[AlHussamAuth] Background device registration notice:', err);
@@ -585,7 +639,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       userEmail: firebaseUser.email || 'staff@local',
       userRole: roleForDev,
     });
-    if (reg) setDeviceRecord(reg);
+    if (reg) {
+      setDeviceRecord(reg);
+      void localDbService.setAuthCache(`device_${dev.deviceId}`, reg).catch(() => {});
+    }
     return reg;
   }, [firebaseUser, isActiveStaff, isAdmin, profile?.displayName, deviceIdentity.deviceName]);
 
@@ -756,8 +813,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const logout = async () => {
+    const uidToClear = firebaseUser?.uid;
     if (Capacitor.isNativePlatform()) {
       await SocialLogin.logout({ provider: 'google' }).catch(() => {});
+    }
+    if (uidToClear) {
+      await localDbService.setAuthCache(`profile_${uidToClear}`, null).catch(() => {});
     }
     await signOut(auth);
   };

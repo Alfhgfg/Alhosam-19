@@ -75,8 +75,8 @@ export const PosView: React.FC = () => {
   const canEditPrice = isAdmin || hasPermission('canManageProducts');
 
   const availableStock = (product: Product): number => {
-    const reserved = reservedStockByProductId.get(product.id) || 0;
-    return Math.max(0, roundMoney(product.stock - reserved));
+    // Projected products from StoreDataContext already reflect pending offline sales and stock adjustments.
+    return Math.max(0, roundMoney(product.stock));
   };
 
   const categories = useMemo(() => {
@@ -365,6 +365,9 @@ export const PosView: React.FC = () => {
       setNewCustName('');
       setNewCustPhone('');
       setNewCustAddress('');
+      if (created.queued) {
+        setSuccessMsg(`تم حفظ العميل "${created.name}" محلياً وسيُزامن تلقائياً فور عودة الاتصال.`);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'تعذر تسجيل العميل.');
     } finally {
@@ -379,7 +382,7 @@ export const PosView: React.FC = () => {
           <h1 className="text-xl font-bold text-slate-900">شاشة البيع السريع (الكاشير)</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             أدخل كود الصنف أو الباركود للإضافة الفورية · جميع الفواتير تُحفظ وترتبط بحساب المسؤول لحظياً
-            {!isOnline && ' · وضع عدم الاتصال نشط (حفظ مؤقت)'}
+            {!isOnline && ' · وضع عدم الاتصال نشط (حفظ محلي دائم)'}
           </p>
         </div>
       </div>
@@ -547,7 +550,7 @@ export const PosView: React.FC = () => {
                           }`}
                         >
                           المتاح: {formatNumber(avail)}
-                          {reserved > 0 ? ` (محجوز ${formatNumber(reserved)})` : ''}
+                          {reserved > 0 ? ` (قيد المزامنة: ${formatNumber(reserved)})` : ''}
                         </span>
                       </div>
                     </button>
