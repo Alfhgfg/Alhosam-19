@@ -1,20 +1,26 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Ban,
   CheckCircle2,
   Download,
   Edit2,
+  ImagePlus,
   Monitor,
   MonitorSmartphone,
+  Printer,
   ShieldCheck,
   Smartphone,
   Tablet,
   Trash2,
   Upload,
   UserPlus,
-  X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  useBackLayer,
+  useNavigation,
+  useSectionDirtyGuard,
+} from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import {
   createStaffInvite,
@@ -32,6 +38,8 @@ import {
   DEFAULT_EMPLOYEE_PERMISSIONS,
   PERMISSION_LABELS,
   type DeviceRecord,
+  type InvoicePaperSize,
+  type StoreLogoMode,
   type UserPermissions,
   type UserProfile,
 } from '../types';
@@ -42,12 +50,28 @@ import {
 } from '../utils/device';
 import { saveTextFileCrossPlatform } from '../utils/exportExcel';
 import { formatDateTime } from '../utils/format';
+import {
+  clearLocalInvoicePreferences,
+  paperSizeLabel,
+  resizeLogoToDataUrl,
+} from '../utils/invoicePrint';
+import { StoreBrandLogo } from './StoreBrandLogo';
+import { ModalSubPageHeader } from './UnifiedBackHeader';
 
 export const StaffAuditView: React.FC = () => {
   const { actorInfo, deviceIdentity } = useAuth();
   const { staffUsers, staffInvites, auditLogs, devices, settings } = useStoreData();
+  const { activeSection, activeSubTab, setSubTab } = useNavigation();
 
-  const [tab, setTab] = useState<'staff' | 'devices' | 'audit' | 'settings'>('staff');
+  const tab: 'staff' | 'devices' | 'audit' | 'settings' =
+    activeSection === 'staff' &&
+    (activeSubTab === 'staff' ||
+      activeSubTab === 'devices' ||
+      activeSubTab === 'audit' ||
+      activeSubTab === 'settings')
+      ? activeSubTab
+      : 'staff';
+  const setTab = (next: 'staff' | 'devices' | 'audit' | 'settings') => setSubTab(next);
 
   // Invite form
   const [invEmail, setInvEmail] = useState('');
@@ -74,21 +98,133 @@ export const StaffAuditView: React.FC = () => {
   const [storeName, setStoreName] = useState(settings.storeName);
   const [storePhone, setStorePhone] = useState(settings.phone || '');
   const [storeAddress, setStoreAddress] = useState(settings.address || '');
+  const [contactInfo, setContactInfo] = useState(settings.contactInfo || '');
+  const [promoText, setPromoText] = useState(settings.promoText || '');
   const [currency, setCurrency] = useState(settings.currency || 'ر.ي');
   const [receiptFooter, setReceiptFooter] = useState(settings.receiptFooter || '');
+  const [logoMode, setLogoMode] = useState<StoreLogoMode>(settings.logoMode || 'default');
+  const [logoDataUrl, setLogoDataUrl] = useState(settings.logoDataUrl || '');
+  const [defaultPaperSize, setDefaultPaperSize] = useState<InvoicePaperSize>(
+    settings.defaultPaperSize || 'a4'
+  );
+  const [showCustomerInfo, setShowCustomerInfo] = useState(settings.showCustomerInfo ?? true);
+  const [showSellerInfo, setShowSellerInfo] = useState(settings.showSellerInfo ?? true);
+  const [showProductCode, setShowProductCode] = useState(settings.showProductCode ?? true);
+  const [showDiscount, setShowDiscount] = useState(settings.showDiscount ?? true);
+  const [showQrCode, setShowQrCode] = useState(settings.showQrCode ?? true);
 
   useEffect(() => {
     setStoreName(settings.storeName || 'بقالة الحسام');
     setStorePhone(settings.phone || '');
     setStoreAddress(settings.address || '');
+    setContactInfo(settings.contactInfo || '');
+    setPromoText(settings.promoText || '');
     setCurrency(settings.currency || 'ر.ي');
-    setReceiptFooter(settings.receiptFooter || '');
+    setReceiptFooter(settings.receiptFooter || 'شكراً لتسوقكم من بقالة الحسام');
+    setLogoMode(settings.logoMode || 'default');
+    setLogoDataUrl(settings.logoDataUrl || '');
+    setDefaultPaperSize(settings.defaultPaperSize || 'a4');
+    setShowCustomerInfo(settings.showCustomerInfo ?? true);
+    setShowSellerInfo(settings.showSellerInfo ?? true);
+    setShowProductCode(settings.showProductCode ?? true);
+    setShowDiscount(settings.showDiscount ?? true);
+    setShowQrCode(settings.showQrCode ?? true);
   }, [settings]);
 
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
+
+  const initialUserEditRef = useRef({
+    name: '',
+    role: 'employee' as 'admin' | 'employee',
+    status: 'active' as 'active' | 'suspended',
+    permsJson: JSON.stringify(DEFAULT_EMPLOYEE_PERMISSIONS),
+  });
+
+  const isSettingsDirty = () =>
+    storeName !== (settings.storeName || 'بقالة الحسام') ||
+    storePhone !== (settings.phone || '') ||
+    storeAddress !== (settings.address || '') ||
+    contactInfo !== (settings.contactInfo || '') ||
+    promoText !== (settings.promoText || '') ||
+    currency !== (settings.currency || 'ر.ي') ||
+    receiptFooter !==
+      (settings.receiptFooter || 'شكراً لتسوقكم من بقالة الحسام') ||
+    logoMode !== (settings.logoMode || 'default') ||
+    logoDataUrl !== (settings.logoDataUrl || '') ||
+    defaultPaperSize !== (settings.defaultPaperSize || 'a4') ||
+    showCustomerInfo !== (settings.showCustomerInfo ?? true) ||
+    showSellerInfo !== (settings.showSellerInfo ?? true) ||
+    showProductCode !== (settings.showProductCode ?? true) ||
+    showDiscount !== (settings.showDiscount ?? true) ||
+    showQrCode !== (settings.showQrCode ?? true);
+
+  const resetSettingsDraft = () => {
+    setStoreName(settings.storeName || 'بقالة الحسام');
+    setStorePhone(settings.phone || '');
+    setStoreAddress(settings.address || '');
+    setContactInfo(settings.contactInfo || '');
+    setPromoText(settings.promoText || '');
+    setCurrency(settings.currency || 'ر.ي');
+    setReceiptFooter(settings.receiptFooter || 'شكراً لتسوقكم من بقالة الحسام');
+    setLogoMode(settings.logoMode || 'default');
+    setLogoDataUrl(settings.logoDataUrl || '');
+    setDefaultPaperSize(settings.defaultPaperSize || 'a4');
+    setShowCustomerInfo(settings.showCustomerInfo ?? true);
+    setShowSellerInfo(settings.showSellerInfo ?? true);
+    setShowProductCode(settings.showProductCode ?? true);
+    setShowDiscount(settings.showDiscount ?? true);
+    setShowQrCode(settings.showQrCode ?? true);
+  };
+
+  useSectionDirtyGuard('staff', {
+    isDirty: () => {
+      if (tab === 'staff') {
+        return invName.trim() !== '' || invEmail.trim() !== '';
+      }
+      if (tab === 'settings') {
+        return isSettingsDirty();
+      }
+      return false;
+    },
+    onDiscard: () => {
+      if (tab === 'staff') {
+        setInvName('');
+        setInvEmail('');
+        setInvPerms({ ...DEFAULT_EMPLOYEE_PERMISSIONS });
+      } else if (tab === 'settings') {
+        resetSettingsDraft();
+      }
+    },
+  });
+
+  const requestCloseEditUser = useBackLayer({
+    id: 'staff-edit-user',
+    active: Boolean(editingUser),
+    onClose: () => setEditingUser(null),
+    isDirty: () => {
+      const s = initialUserEditRef.current;
+      return (
+        editName !== s.name ||
+        editRole !== s.role ||
+        editStatus !== s.status ||
+        JSON.stringify(editPerms) !== s.permsJson
+      );
+    },
+  });
+
+  const requestCloseRenameDevice = useBackLayer({
+    id: 'staff-rename-device',
+    active: Boolean(renamingDevice),
+    onClose: () => setRenamingDevice(null),
+    isDirty: () =>
+      Boolean(
+        renamingDevice &&
+          renameDevInput.trim() !== renamingDevice.deviceName.trim()
+      ),
+  });
 
   const sortedStaffUsers = useMemo(() => {
     const rank = (u: UserProfile) => (u.status === 'pending' ? 0 : u.status === 'active' ? 1 : 2);
@@ -130,11 +266,24 @@ export const StaffAuditView: React.FC = () => {
   };
 
   const openEditUser = (u: UserProfile) => {
+    const role: 'admin' | 'employee' = u.role === 'admin' ? 'admin' : 'employee';
+    const status: 'active' | 'suspended' =
+      u.status === 'suspended' ? 'suspended' : 'active';
+    const perms: UserPermissions = {
+      ...DEFAULT_EMPLOYEE_PERMISSIONS,
+      ...(u.permissions || {}),
+    };
+    initialUserEditRef.current = {
+      name: u.displayName,
+      role,
+      status,
+      permsJson: JSON.stringify(perms),
+    };
     setEditingUser(u);
     setEditName(u.displayName);
-    setEditRole(u.role === 'admin' ? 'admin' : 'employee');
-    setEditStatus(u.status === 'suspended' ? 'suspended' : 'active');
-    setEditPerms({ ...DEFAULT_EMPLOYEE_PERMISSIONS, ...(u.permissions || {}) });
+    setEditRole(role);
+    setEditStatus(status);
+    setEditPerms(perms);
   };
 
   const handleSaveUser = async (e: React.FormEvent) => {
@@ -224,6 +373,27 @@ export const StaffAuditView: React.FC = () => {
     }
   };
 
+  const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setFeedback(null);
+    try {
+      const resized = await resizeLogoToDataUrl(file);
+      setLogoDataUrl(resized);
+      setLogoMode('custom');
+      setFeedback({
+        type: 'ok',
+        text: 'تم تجهيز شعار المحل بنجاح. اضغط «حفظ الإعدادات» لتطبيقه في جميع الفواتير.',
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'تعذر معالجة صورة الشعار.',
+      });
+    }
+  };
+
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!actorInfo) return;
@@ -234,10 +404,24 @@ export const StaffAuditView: React.FC = () => {
         storeName,
         phone: storePhone,
         address: storeAddress,
+        contactInfo,
+        promoText,
         currency,
         receiptFooter,
+        logoMode,
+        logoDataUrl,
+        defaultPaperSize,
+        showCustomerInfo,
+        showSellerInfo,
+        showProductCode,
+        showDiscount,
+        showQrCode,
       });
-      setFeedback({ type: 'ok', text: 'تم حفظ إعدادات بقالة الحسام.' });
+      clearLocalInvoicePreferences();
+      setFeedback({
+        type: 'ok',
+        text: 'تم حفظ إعدادات بقالة الحسام وتنسيق الفاتورة بنجاح.',
+      });
     } catch (err) {
       setFeedback({
         type: 'err',
@@ -765,12 +949,69 @@ export const StaffAuditView: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           <form
             onSubmit={handleSaveSettings}
-            className="bg-white border border-slate-200 rounded-xl p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-xl p-6 space-y-5"
           >
             <h2 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-3">
-              بيانات المحل والفواتير
+              بيانات المحل وتخصيص الفاتورة
             </h2>
-            <div className="space-y-3">
+            <div className="space-y-3.5">
+              {/* Store Logo Settings */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <StoreBrandLogo
+                      mode={logoMode}
+                      customDataUrl={logoDataUrl}
+                      storeName={storeName || 'بقالة الحسام'}
+                      compact
+                    />
+                    <div>
+                      <div className="text-xs font-bold text-slate-900">
+                        شعار الفاتورة
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        يظهر في رأس الفواتير المطبوعة وPDF
+                      </div>
+                    </div>
+                  </div>
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-lg cursor-pointer whitespace-nowrap">
+                    <ImagePlus className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>رفع شعار</span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      onChange={handleLogoFileChange}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
+                  {(
+                    [
+                      { id: 'default', label: 'الشعار الرسمي' },
+                      { id: 'minimal', label: 'أحادي مبسط' },
+                      { id: 'custom', label: 'صورة مخصصة' },
+                      { id: 'none', label: 'بدون شعار' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={opt.id === 'custom' && !logoDataUrl}
+                      onClick={() => setLogoMode(opt.id)}
+                      className={`py-1.5 px-2 rounded-lg border font-semibold cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+                        logoMode === opt.id
+                          ? 'bg-emerald-700 text-white border-emerald-700'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   اسم المحل
@@ -783,6 +1024,7 @@ export const StaffAuditView: React.FC = () => {
                   className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                 />
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   العملة
@@ -804,17 +1046,34 @@ export const StaffAuditView: React.FC = () => {
                   </button>
                 </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  رقم الهاتف
-                </label>
-                <input
-                  type="text"
-                  value={storePhone}
-                  onChange={(e) => setStorePhone(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
-                />
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    رقم الهاتف
+                  </label>
+                  <input
+                    type="text"
+                    value={storePhone}
+                    onChange={(e) => setStorePhone(e.target.value)}
+                    placeholder="مثال: 777000000"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    بيانات تواصل إضافية
+                  </label>
+                  <input
+                    type="text"
+                    value={contactInfo}
+                    onChange={(e) => setContactInfo(e.target.value)}
+                    placeholder="واتساب أو خدمة العملاء"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   العنوان
@@ -823,19 +1082,111 @@ export const StaffAuditView: React.FC = () => {
                   type="text"
                   value={storeAddress}
                   onChange={(e) => setStoreAddress(e.target.value)}
+                  placeholder="المدينة - الشارع - بجانب..."
                   className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                 />
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  تذييل الفاتورة
+                  عبارة الشكر (تذييل الفاتورة)
                 </label>
                 <input
                   type="text"
                   value={receiptFooter}
                   onChange={(e) => setReceiptFooter(e.target.value)}
+                  placeholder="شكراً لتسوقكم من بقالة الحسام"
                   className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  عبارة ترويجية أو إشعار أسفل الفاتورة (اختياري)
+                </label>
+                <input
+                  type="text"
+                  value={promoText}
+                  onChange={(e) => setPromoText(e.target.value)}
+                  placeholder="مثال: توصيل مجاني للطلبات فوق 10,000 ر.ي"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                />
+              </div>
+
+              {/* Paper Size & Display Toggles */}
+              <div className="pt-2 border-t border-slate-100 space-y-3">
+                <div>
+                  <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 mb-1.5">
+                    <Printer className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>مقاس الورق الافتراضي للطباعة</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['a4', '80mm', '58mm'] as InvoicePaperSize[]).map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        onClick={() => setDefaultPaperSize(size)}
+                        className={`py-2 px-3 text-xs font-semibold rounded-lg border cursor-pointer whitespace-nowrap ${
+                          defaultPaperSize === size
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        {paperSizeLabel(size)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold text-slate-700 mb-2">
+                    العناصر الظاهرة في الفاتورة
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                    {[
+                      {
+                        label: 'إظهار بيانات العميل',
+                        checked: showCustomerInfo,
+                        onChange: setShowCustomerInfo,
+                      },
+                      {
+                        label: 'إظهار اسم البائع / الموظف',
+                        checked: showSellerInfo,
+                        onChange: setShowSellerInfo,
+                      },
+                      {
+                        label: 'إظهار كود الصنف في الجدول',
+                        checked: showProductCode,
+                        onChange: setShowProductCode,
+                      },
+                      {
+                        label: 'إظهار تفاصيل الخصم',
+                        checked: showDiscount,
+                        onChange: setShowDiscount,
+                      },
+                      {
+                        label: 'إظهار رمز QR في أسفل الفاتورة',
+                        checked: showQrCode,
+                        onChange: setShowQrCode,
+                      },
+                    ].map((toggle) => (
+                      <label
+                        key={toggle.label}
+                        className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50/70 cursor-pointer hover:border-emerald-300"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={toggle.checked}
+                          onChange={(e) => toggle.onChange(e.target.checked)}
+                          className="rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
+                        />
+                        <span className="font-medium text-slate-700">
+                          {toggle.label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
             <button
@@ -843,7 +1194,7 @@ export const StaffAuditView: React.FC = () => {
               disabled={saving}
               className="px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-xl cursor-pointer"
             >
-              حفظ الإعدادات
+              {saving ? 'جاري الحفظ...' : 'حفظ الإعدادات'}
             </button>
           </form>
 
@@ -885,106 +1236,93 @@ export const StaffAuditView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto">
           <form
             onSubmit={handleSaveUser}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-base font-bold text-slate-900">
-                إدارة حساب: {editingUser.displayName}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setEditingUser(null)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  الاسم
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
+            <ModalSubPageHeader
+              title={`إدارة حساب: ${editingUser.displayName}`}
+              onBack={requestCloseEditUser}
+            />
+            <div className="p-6 space-y-4">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    الدور
+                    الاسم
                   </label>
-                  <select
-                    value={editRole}
-                    onChange={(e) =>
-                      setEditRole(e.target.value as 'admin' | 'employee')
-                    }
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
-                  >
-                    <option value="employee">موظف / بائع</option>
-                    <option value="admin">مسؤول رئيسي</option>
-                  </select>
+                  <input
+                    required
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
                 </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    الحالة
-                  </label>
-                  <select
-                    value={editStatus}
-                    onChange={(e) =>
-                      setEditStatus(e.target.value as 'active' | 'suspended')
-                    }
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
-                  >
-                    <option value="active">نشط</option>
-                    <option value="suspended">موقوف</option>
-                  </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      الدور
+                    </label>
+                    <select
+                      value={editRole}
+                      onChange={(e) =>
+                        setEditRole(e.target.value as 'admin' | 'employee')
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    >
+                      <option value="employee">موظف / بائع</option>
+                      <option value="admin">مسؤول رئيسي</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      الحالة
+                    </label>
+                    <select
+                      value={editStatus}
+                      onChange={(e) =>
+                        setEditStatus(e.target.value as 'active' | 'suspended')
+                      }
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white"
+                    >
+                      <option value="active">نشط</option>
+                      <option value="suspended">موقوف</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
 
-              {editRole === 'employee' && (
-                <div className="space-y-1.5 border-t border-slate-100 pt-3 max-h-52 overflow-y-auto">
-                  {(Object.keys(PERMISSION_LABELS) as (keyof UserPermissions)[]).map(
-                    (key) => (
-                      <label
-                        key={key}
-                        className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={editPerms[key]}
-                          onChange={(e) =>
-                            setEditPerms((prev) => ({
-                              ...prev,
-                              [key]: e.target.checked,
-                            }))
-                          }
-                        />
-                        <span>{PERMISSION_LABELS[key]}</span>
-                      </label>
-                    )
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setEditingUser(null)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                حفظ التغييرات
-              </button>
+                {editRole === 'employee' && (
+                  <div className="space-y-1.5 border-t border-slate-100 pt-3 max-h-52 overflow-y-auto">
+                    {(Object.keys(PERMISSION_LABELS) as (keyof UserPermissions)[]).map(
+                      (key) => (
+                        <label
+                          key={key}
+                          className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={editPerms[key]}
+                            onChange={(e) =>
+                              setEditPerms((prev) => ({
+                                ...prev,
+                                [key]: e.target.checked,
+                              }))
+                            }
+                          />
+                          <span>{PERMISSION_LABELS[key]}</span>
+                        </label>
+                      )
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
+                >
+                  حفظ التغييرات
+                </button>
+              </div>
             </div>
           </form>
         </div>
@@ -995,57 +1333,44 @@ export const StaffAuditView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleSaveDeviceRename}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-base font-bold text-slate-900">
-                تغيير اسم الجهاز
-              </h3>
-              <button
-                type="button"
-                onClick={() => setRenamingDevice(null)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                اسم الجهاز الجديد *
-              </label>
-              <input
-                required
-                type="text"
-                value={renameDevInput}
-                onChange={(e) => setRenameDevInput(e.target.value)}
-                placeholder={`اكتب: ${REQUIRED_DEVICE_NAME}`}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-              />
-              <div className="flex justify-end mt-1.5">
+            <ModalSubPageHeader
+              title="تغيير اسم الجهاز"
+              onBack={requestCloseRenameDevice}
+            />
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  اسم الجهاز الجديد *
+                </label>
+                <input
+                  required
+                  type="text"
+                  value={renameDevInput}
+                  onChange={(e) => setRenameDevInput(e.target.value)}
+                  placeholder={`اكتب: ${REQUIRED_DEVICE_NAME}`}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                />
+                <div className="flex justify-end mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setRenameDevInput(REQUIRED_DEVICE_NAME)}
+                    className="text-[11px] text-emerald-700 font-semibold hover:underline cursor-pointer"
+                  >
+                    تعيين الاسم المعتمد «{REQUIRED_DEVICE_NAME}»
+                  </button>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
                 <button
-                  type="button"
-                  onClick={() => setRenameDevInput(REQUIRED_DEVICE_NAME)}
-                  className="text-[11px] text-emerald-700 font-semibold hover:underline cursor-pointer"
+                  type="submit"
+                  disabled={saving}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
                 >
-                  تعيين الاسم المعتمد «{REQUIRED_DEVICE_NAME}»
+                  حفظ الاسم
                 </button>
               </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setRenamingDevice(null)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                حفظ الاسم
-              </button>
             </div>
           </form>
         </div>

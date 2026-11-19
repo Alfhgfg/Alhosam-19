@@ -1,7 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { CheckCircle2, FileSpreadsheet, Printer } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import { useStoreData } from '../contexts/StoreDataContext';
+import type { SaleInvoice } from '../types';
 import {
   appendRtlSheet,
   exportToExcel,
@@ -18,6 +20,7 @@ import {
   saleStatusLabel,
   toDate,
 } from '../utils/format';
+import { InvoiceDetailModal } from './InvoiceDetailModal';
 
 type ReportType =
   | 'sales'
@@ -46,11 +49,13 @@ export const ReportsView: React.FC = () => {
     settings,
   } = useStoreData();
 
+  const { isAdmin } = useAuth();
   const [reportType, setReportType] = useState<ReportType>('sales');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [codeFilter, setCodeFilter] = useState('');
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [selectedSale, setSelectedSale] = useState<SaleInvoice | null>(null);
 
   const inRange = (ts: typeof sales[number]['createdAt']) => {
     if (!dateFrom && !dateTo) return true;
@@ -867,8 +872,14 @@ export const ReportsView: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredSales.map((s) => (
-                  <tr key={s.id}>
-                    <td className="py-2 px-3 font-mono-num font-semibold">{s.invoiceNumber}</td>
+                  <tr
+                    key={s.id}
+                    onClick={() => setSelectedSale(s)}
+                    className="hover:bg-slate-50 cursor-pointer"
+                  >
+                    <td className="py-2 px-3 font-mono-num font-semibold text-emerald-700">
+                      {s.invoiceNumber}
+                    </td>
                     <td className="py-2 px-3">{formatDateTime(s.createdAt)}</td>
                     <td className="py-2 px-3">{s.employeeName}</td>
                     <td className="py-2 px-3 text-slate-500">{s.deviceName || '—'}</td>
@@ -1330,6 +1341,12 @@ export const ReportsView: React.FC = () => {
           </div>
         )}
       </div>
+
+      <InvoiceDetailModal
+        sale={selectedSale}
+        onClose={() => setSelectedSale(null)}
+        showProfit={isAdmin}
+      />
     </div>
   );
 };

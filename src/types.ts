@@ -78,6 +78,9 @@ export const FIELD_LIMITS = {
   notesMax: 300,
   currencyMax: 20,
   detailsMax: 1000,
+  contactInfoMax: 240,
+  promoTextMax: 300,
+  logoDataUrlMax: 36000,
   maxLineItems: 100,
 } as const;
 
@@ -125,12 +128,25 @@ export interface DeviceRecord {
   updatedAt: Timestamp | null;
 }
 
+export type InvoicePaperSize = 'a4' | '80mm' | '58mm';
+export type StoreLogoMode = 'default' | 'minimal' | 'custom' | 'none';
+
 export interface StoreSettings {
   storeName: string;
   phone: string;
   address: string;
+  contactInfo?: string;
+  promoText?: string;
   currency: string;
   receiptFooter: string;
+  logoMode?: StoreLogoMode;
+  logoDataUrl?: string;
+  defaultPaperSize?: InvoicePaperSize;
+  showCustomerInfo?: boolean;
+  showSellerInfo?: boolean;
+  showProductCode?: boolean;
+  showDiscount?: boolean;
+  showQrCode?: boolean;
   updatedAt: Timestamp | null;
 }
 

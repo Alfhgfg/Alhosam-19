@@ -14,6 +14,7 @@ import {
   Tablet,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useBackLayer } from '../contexts/NavigationContext';
 import {
   deviceTypeLabel,
   isAllowedDeviceName,
@@ -40,6 +41,12 @@ export const LoginView: React.FC = () => {
   const [deviceDraft, setDeviceDraft] = useState(deviceIdentity.deviceName);
   const [savingDevice, setSavingDevice] = useState(false);
   const [localAuthNotice, setLocalAuthNotice] = useState<string | null>(null);
+
+  useBackLayer({
+    id: 'login-edit-device',
+    active: editingDevice,
+    onClose: () => setEditingDevice(false),
+  });
 
   const isCurrentNameAllowed = isAllowedDeviceName(
     deviceRecord?.deviceName || deviceIdentity.deviceName

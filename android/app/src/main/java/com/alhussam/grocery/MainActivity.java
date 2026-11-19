@@ -15,6 +15,8 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
+
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginHandle;
@@ -35,12 +37,39 @@ public class MainActivity extends BridgeActivity implements ModifiedMainActivity
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         configureWebView();
+        registerBackHandler();
     }
 
     @Override
     public void onStart() {
         super.onStart();
         configureWebView();
+    }
+
+    private void registerBackHandler() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+                if (webView == null) {
+                    moveTaskToBack(true);
+                    return;
+                }
+                webView.evaluateJavascript(
+                    "(function(){if(typeof window.__ALHUSSAM_ON_ANDROID_BACK__==='function'){window.__ALHUSSAM_ON_ANDROID_BACK__();return 'handled';}return 'fallback';})()",
+                    result -> {
+                        if (result != null && result.contains("handled")) {
+                            return;
+                        }
+                        if (webView.canGoBack()) {
+                            webView.goBack();
+                        } else {
+                            moveTaskToBack(true);
+                        }
+                    }
+                );
+            }
+        });
     }
 
     @Override
@@ -82,7 +111,25 @@ public class MainActivity extends BridgeActivity implements ModifiedMainActivity
 
         if (!webViewBridgeAttached) {
             webView.addJavascriptInterface(new AndroidFileBridge(), "AndroidFileBridge");
+            webView.addJavascriptInterface(new AndroidNavBridge(), "AndroidNavBridge");
             webViewBridgeAttached = true;
+        }
+    }
+
+    private class AndroidNavBridge {
+        @JavascriptInterface
+        public void exitApp() {
+            runOnUiThread(() -> finish());
+        }
+
+        @JavascriptInterface
+        public void showExitHint(String message) {
+            if (message == null || message.trim().isEmpty()) {
+                return;
+            }
+            runOnUiThread(() ->
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show()
+            );
         }
     }
 

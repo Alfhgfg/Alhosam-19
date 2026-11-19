@@ -113,8 +113,18 @@ const DEFAULT_SETTINGS: StoreSettings = {
   storeName: 'بقالة الحسام',
   phone: '',
   address: '',
+  contactInfo: '',
+  promoText: '',
   currency: 'ر.ي',
-  receiptFooter: 'شكراً لتعاملكم مع بقالة الحسام',
+  receiptFooter: 'شكراً لتسوقكم من بقالة الحسام',
+  logoMode: 'default',
+  logoDataUrl: '',
+  defaultPaperSize: 'a4',
+  showCustomerInfo: true,
+  showSellerInfo: true,
+  showProductCode: true,
+  showDiscount: true,
+  showQrCode: true,
   updatedAt: null,
 };
 
@@ -342,11 +352,23 @@ export const StoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         if (savedSettings.length > 0) {
           const s = savedSettings[0];
           setSettings({
+            ...DEFAULT_SETTINGS,
+            ...s,
             storeName: s.storeName || DEFAULT_SETTINGS.storeName,
             phone: s.phone || '',
             address: s.address || '',
+            contactInfo: s.contactInfo || '',
+            promoText: s.promoText || '',
             currency: s.currency === 'ر.س' ? 'ر.ي' : s.currency || 'ر.ي',
             receiptFooter: s.receiptFooter || DEFAULT_SETTINGS.receiptFooter,
+            logoMode: s.logoMode || DEFAULT_SETTINGS.logoMode,
+            logoDataUrl: s.logoDataUrl || '',
+            defaultPaperSize: s.defaultPaperSize || DEFAULT_SETTINGS.defaultPaperSize,
+            showCustomerInfo: s.showCustomerInfo ?? true,
+            showSellerInfo: s.showSellerInfo ?? true,
+            showProductCode: s.showProductCode ?? true,
+            showDiscount: s.showDiscount ?? true,
+            showQrCode: s.showQrCode ?? true,
             updatedAt: s.updatedAt || null,
           });
         }
@@ -413,8 +435,18 @@ export const StoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
           if (snap.exists()) {
             const raw = snap.data() as StoreSettings;
             const resolved: StoreSettings = {
+              ...DEFAULT_SETTINGS,
               ...raw,
               currency: raw.currency === 'ر.س' ? 'ر.ي' : raw.currency || 'ر.ي',
+              receiptFooter: raw.receiptFooter || DEFAULT_SETTINGS.receiptFooter,
+              logoMode: raw.logoMode || 'default',
+              logoDataUrl: raw.logoDataUrl || '',
+              defaultPaperSize: raw.defaultPaperSize || 'a4',
+              showCustomerInfo: raw.showCustomerInfo ?? true,
+              showSellerInfo: raw.showSellerInfo ?? true,
+              showProductCode: raw.showProductCode ?? true,
+              showDiscount: raw.showDiscount ?? true,
+              showQrCode: raw.showQrCode ?? true,
             };
             setSettings(resolved);
             if (!snap.metadata.hasPendingWrites) {

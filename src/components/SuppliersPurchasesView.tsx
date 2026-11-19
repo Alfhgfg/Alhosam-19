@@ -1,13 +1,18 @@
-import React, { useMemo, useState } from 'react';
-import { Banknote, Camera, FileText, Plus, Search, Trash2, X } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { Banknote, Camera, Eye, FileText, Plus, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  useBackLayer,
+  useNavigation,
+  useSectionDirtyGuard,
+} from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import {
   createSupplier,
   executePurchase,
   recordVoucher,
 } from '../services/accountingService';
-import type { PaymentMethod, Product, Supplier } from '../types';
+import type { PaymentMethod, Product, PurchaseInvoice, Supplier } from '../types';
 import {
   formatDateTime,
   formatMoney,
@@ -15,6 +20,7 @@ import {
   roundMoney,
 } from '../utils/format';
 import { CameraBarcodeModal } from './CameraBarcodeModal';
+import { ModalSubPageHeader } from './UnifiedBackHeader';
 
 interface PurchaseLine {
   product: Product;
@@ -27,8 +33,16 @@ export const SuppliersPurchasesView: React.FC = () => {
   const { actorInfo } = useAuth();
   const { suppliers, purchases, products, vouchers, settings, productByCode, isOnline } =
     useStoreData();
+  const { activeSection, activeSubTab, setSubTab } = useNavigation();
 
-  const [tab, setTab] = useState<'new_purchase' | 'history' | 'suppliers'>('new_purchase');
+  const tab: 'new_purchase' | 'history' | 'suppliers' =
+    activeSection === 'suppliers' &&
+    (activeSubTab === 'new_purchase' ||
+      activeSubTab === 'history' ||
+      activeSubTab === 'suppliers')
+      ? activeSubTab
+      : 'new_purchase';
+  const setTab = (next: 'new_purchase' | 'history' | 'suppliers') => setSubTab(next);
 
   // New purchase form
   const [supplierId, setSupplierId] = useState('');
@@ -55,9 +69,75 @@ export const SuppliersPurchasesView: React.FC = () => {
   const [payAmt, setPayAmt] = useState('');
   const [payNotes, setPayNotes] = useState('');
   const [paying, setPaying] = useState(false);
+  const initialPayAmtRef = useRef('');
 
-  // Supplier statement modal
+  // Supplier statement & purchase detail modals
   const [stmtSupp, setStmtSupp] = useState<Supplier | null>(null);
+  const [selectedPurchase, setSelectedPurchase] = useState<PurchaseInvoice | null>(null);
+
+  const liveStmtSupp = useMemo(
+    () =>
+      stmtSupp
+        ? suppliers.find((s) => s.id === stmtSupp.id) || stmtSupp
+        : null,
+    [stmtSupp, suppliers]
+  );
+
+  useSectionDirtyGuard('suppliers', {
+    isDirty: () =>
+      tab === 'new_purchase' &&
+      (items.length > 0 ||
+        supplierId !== '' ||
+        notes.trim() !== '' ||
+        paidAmountInput !== ''),
+    dirtyMessage:
+      items.length > 0
+        ? 'توجد فاتورة شراء غير محفوظة، هل تريد الخروج دون حفظ؟'
+        : undefined,
+    onDiscard: () => {
+      setItems([]);
+      setSupplierId('');
+      setPaidAmountInput('');
+      setNotes('');
+      setCodeSearch('');
+    },
+  });
+
+  const requestCloseAddSupp = useBackLayer({
+    id: 'supplier-add',
+    active: showAddSupp,
+    onClose: () => setShowAddSupp(false),
+    isDirty: () =>
+      suppName.trim() !== '' || suppPhone.trim() !== '' || suppAddress.trim() !== '',
+    onDiscard: () => {
+      setSuppName('');
+      setSuppPhone('');
+      setSuppAddress('');
+    },
+  });
+
+  const requestClosePaySupp = useBackLayer({
+    id: 'supplier-payment',
+    active: Boolean(paySupp),
+    onClose: () => setPaySupp(null),
+    isDirty: () => payAmt !== initialPayAmtRef.current || payNotes.trim() !== '',
+    onDiscard: () => {
+      setPayAmt('');
+      setPayNotes('');
+    },
+  });
+
+  const requestCloseStmtSupp = useBackLayer({
+    id: 'supplier-statement',
+    active: Boolean(liveStmtSupp),
+    onClose: () => setStmtSupp(null),
+  });
+
+  const requestClosePurchaseDetail = useBackLayer({
+    id: 'purchase-detail',
+    active: Boolean(selectedPurchase),
+    onClose: () => setSelectedPurchase(null),
+  });
 
   const selectedSupplier = useMemo(
     () => suppliers.find((s) => s.id === supplierId) || null,
@@ -535,12 +615,17 @@ export const SuppliersPurchasesView: React.FC = () => {
                     <th className="text-left py-3 px-4">المتبقي</th>
                     <th className="text-right py-3 px-4">الموظف والجهاز</th>
                     <th className="text-right py-3 px-4">التاريخ</th>
+                    <th className="text-center py-3 px-4">عرض</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {purchases.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-50">
-                      <td className="py-3 px-4 font-mono-num font-semibold">
+                    <tr
+                      key={p.id}
+                      onClick={() => setSelectedPurchase(p)}
+                      className="hover:bg-slate-50 cursor-pointer"
+                    >
+                      <td className="py-3 px-4 font-mono-num font-semibold text-emerald-700">
                         {p.purchaseNumber}
                       </td>
                       <td className="py-3 px-4 font-medium text-slate-900">
@@ -567,6 +652,19 @@ export const SuppliersPurchasesView: React.FC = () => {
                       </td>
                       <td className="py-3 px-4 text-xs text-slate-500">
                         {formatDateTime(p.createdAt)}
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedPurchase(p);
+                          }}
+                          className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg cursor-pointer"
+                          title="تفاصيل الفاتورة"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -637,8 +735,11 @@ export const SuppliersPurchasesView: React.FC = () => {
                           </button>
                           <button
                             onClick={() => {
+                              const initAmt = s.balanceDue > 0 ? String(s.balanceDue) : '';
+                              initialPayAmtRef.current = initAmt;
                               setPaySupp(s);
-                              setPayAmt(s.balanceDue > 0 ? String(s.balanceDue) : '');
+                              setPayAmt(initAmt);
+                              setPayNotes('');
                             }}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg cursor-pointer"
                           >
@@ -661,69 +762,58 @@ export const SuppliersPurchasesView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleCreateSupplier}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">إضافة مورد جديد</h3>
-              <button
-                type="button"
-                onClick={() => setShowAddSupp(false)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  اسم المورد / الشركة *
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={suppName}
-                  onChange={(e) => setSuppName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
+            <ModalSubPageHeader
+              title="إضافة مورد جديد"
+              onBack={requestCloseAddSupp}
+            />
+            <div className="p-6 space-y-4">
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    اسم المورد / الشركة *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={suppName}
+                    onChange={(e) => setSuppName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    رقم الهاتف
+                  </label>
+                  <input
+                    type="text"
+                    value={suppPhone}
+                    onChange={(e) => setSuppPhone(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    العنوان
+                  </label>
+                  <input
+                    type="text"
+                    value={suppAddress}
+                    onChange={(e) => setSuppAddress(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  رقم الهاتف
-                </label>
-                <input
-                  type="text"
-                  value={suppPhone}
-                  onChange={(e) => setSuppPhone(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
-                />
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={savingSupp}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
+                >
+                  {savingSupp ? 'جاري الحفظ...' : 'حفظ المورد'}
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  العنوان
-                </label>
-                <input
-                  type="text"
-                  value={suppAddress}
-                  onChange={(e) => setSuppAddress(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowAddSupp(false)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={savingSupp}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                {savingSupp ? 'جاري الحفظ...' : 'حفظ المورد'}
-              </button>
             </div>
           </form>
         </div>
@@ -734,144 +824,231 @@ export const SuppliersPurchasesView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handlePaySupplier}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                سند صرف للمورد: {paySupp.name}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setPaySupp(null)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
-              المبلغ المستحق للمورد:{' '}
-              <strong className="font-mono-num text-red-700">
-                {formatMoney(paySupp.balanceDue, settings.currency)}
-              </strong>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  المبلغ المدفوع *
-                </label>
-                <input
-                  required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={payAmt}
-                  onChange={(e) => setPayAmt(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
-                />
+            <ModalSubPageHeader
+              title={`سند صرف للمورد: ${paySupp.name}`}
+              onBack={requestClosePaySupp}
+            />
+            <div className="p-6 space-y-4">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+                المبلغ المستحق للمورد:{' '}
+                <strong className="font-mono-num text-red-700">
+                  {formatMoney(paySupp.balanceDue, settings.currency)}
+                </strong>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  ملاحظات
-                </label>
-                <input
-                  type="text"
-                  value={payNotes}
-                  onChange={(e) => setPayNotes(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    المبلغ المدفوع *
+                  </label>
+                  <input
+                    required
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={payAmt}
+                    onChange={(e) => setPayAmt(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    ملاحظات
+                  </label>
+                  <input
+                    type="text"
+                    value={payNotes}
+                    onChange={(e) => setPayNotes(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
               </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setPaySupp(null)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={paying}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                {paying ? 'جاري التسجيل...' : 'تأكيد الصرف'}
-              </button>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={paying}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
+                >
+                  {paying ? 'جاري التسجيل...' : 'تأكيد الصرف'}
+                </button>
+              </div>
             </div>
           </form>
         </div>
       )}
 
       {/* Supplier Statement Modal */}
-      {stmtSupp && (
+      {liveStmtSupp && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-2xl p-6 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-base font-bold text-slate-900">
-                كشف حساب المورد: {stmtSupp.name} ({stmtSupp.supplierCode})
-              </h3>
-              <button
-                onClick={() => setStmtSupp(null)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-2xl overflow-hidden shadow-xl">
+            <ModalSubPageHeader
+              title={`كشف حساب المورد: ${liveStmtSupp.name}`}
+              subtitle={`${liveStmtSupp.supplierCode} · ${liveStmtSupp.phone || 'بدون هاتف'}`}
+              onBack={requestCloseStmtSupp}
+            />
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-3 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs">
+                <div>
+                  إجمالي المشتريات:{' '}
+                  <strong className="block font-mono-num text-sm mt-0.5">
+                    {formatMoney(liveStmtSupp.totalPurchases, settings.currency)}
+                  </strong>
+                </div>
+                <div>
+                  إجمالي المدفوع:{' '}
+                  <strong className="block font-mono-num text-sm text-emerald-700 mt-0.5">
+                    {formatMoney(liveStmtSupp.totalPaid, settings.currency)}
+                  </strong>
+                </div>
+                <div>
+                  المتبقي:{' '}
+                  <strong className="block font-mono-num text-sm text-red-700 mt-0.5">
+                    {formatMoney(liveStmtSupp.balanceDue, settings.currency)}
+                  </strong>
+                </div>
+              </div>
+              <div className="space-y-2 max-h-60 overflow-y-auto">
+                <h4 className="text-xs font-bold text-slate-700">فواتير الشراء</h4>
+                {purchases
+                  .filter((p) => p.supplierId === liveStmtSupp.id)
+                  .map((p) => (
+                    <button
+                      type="button"
+                      key={p.id}
+                      onClick={() => setSelectedPurchase(p)}
+                      className="w-full text-right flex justify-between text-xs border-b border-slate-100 py-2 px-2 hover:bg-slate-50 rounded-lg cursor-pointer"
+                    >
+                      <span className="font-mono-num font-semibold text-emerald-700">
+                        {p.purchaseNumber} · {formatDateTime(p.createdAt)}
+                      </span>
+                      <span className="font-mono-num">
+                        إجمالي: {formatMoney(p.total, settings.currency)} · مدفوع:{' '}
+                        {formatMoney(p.paidAmount, settings.currency)}
+                      </span>
+                    </button>
+                  ))}
+              </div>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                <h4 className="text-xs font-bold text-slate-700">سندات الصرف</h4>
+                {vouchers
+                  .filter((v) => v.partyType === 'supplier' && v.partyId === liveStmtSupp.id)
+                  .map((v) => (
+                    <div
+                      key={v.id}
+                      className="flex justify-between text-xs border-b border-slate-100 py-2"
+                    >
+                      <span className="font-mono-num font-semibold">
+                        {v.voucherNumber} · {formatDateTime(v.createdAt)}
+                      </span>
+                      <span className="font-mono-num text-emerald-700 font-semibold">
+                        {formatMoney(v.amount, settings.currency)}
+                      </span>
+                    </div>
+                  ))}
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs">
-              <div>
-                إجمالي المشتريات:{' '}
-                <strong className="block font-mono-num text-sm mt-0.5">
-                  {formatMoney(stmtSupp.totalPurchases, settings.currency)}
-                </strong>
-              </div>
-              <div>
-                إجمالي المدفوع:{' '}
-                <strong className="block font-mono-num text-sm text-emerald-700 mt-0.5">
-                  {formatMoney(stmtSupp.totalPaid, settings.currency)}
-                </strong>
-              </div>
-              <div>
-                المتبقي:{' '}
-                <strong className="block font-mono-num text-sm text-red-700 mt-0.5">
-                  {formatMoney(stmtSupp.balanceDue, settings.currency)}
-                </strong>
-              </div>
-            </div>
-            <div className="space-y-2 max-h-60 overflow-y-auto">
-              <h4 className="text-xs font-bold text-slate-700">فواتير الشراء</h4>
-              {purchases
-                .filter((p) => p.supplierId === stmtSupp.id)
-                .map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex justify-between text-xs border-b border-slate-100 py-2"
-                  >
-                    <span className="font-mono-num font-semibold">
-                      {p.purchaseNumber} · {formatDateTime(p.createdAt)}
-                    </span>
-                    <span className="font-mono-num">
-                      إجمالي: {formatMoney(p.total, settings.currency)} · مدفوع:{' '}
-                      {formatMoney(p.paidAmount, settings.currency)}
-                    </span>
+          </div>
+        </div>
+      )}
+
+      {/* Purchase Invoice Detail Modal */}
+      {selectedPurchase && (
+        <div className="fixed inset-0 z-[55] bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-2xl overflow-hidden shadow-xl">
+            <ModalSubPageHeader
+              title={`تفاصيل فاتورة الشراء: ${selectedPurchase.purchaseNumber}`}
+              subtitle={`${selectedPurchase.supplierName} · ${formatDateTime(
+                selectedPurchase.createdAt
+              )}`}
+              onBack={requestClosePurchaseDetail}
+            />
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs">
+                <div>
+                  <div className="text-slate-500">المورد</div>
+                  <div className="font-bold text-slate-900 mt-0.5">
+                    {selectedPurchase.supplierName}
                   </div>
-                ))}
-            </div>
-            <div className="space-y-2 max-h-48 overflow-y-auto">
-              <h4 className="text-xs font-bold text-slate-700">سندات الصرف</h4>
-              {vouchers
-                .filter((v) => v.partyType === 'supplier' && v.partyId === stmtSupp.id)
-                .map((v) => (
-                  <div
-                    key={v.id}
-                    className="flex justify-between text-xs border-b border-slate-100 py-2"
-                  >
-                    <span className="font-mono-num font-semibold">
-                      {v.voucherNumber} · {formatDateTime(v.createdAt)}
-                    </span>
-                    <span className="font-mono-num text-emerald-700 font-semibold">
-                      {formatMoney(v.amount, settings.currency)}
-                    </span>
+                </div>
+                <div>
+                  <div className="text-slate-500">طريقة الدفع</div>
+                  <div className="font-bold text-slate-900 mt-0.5">
+                    {paymentMethodLabel(selectedPurchase.paymentMethod)}
                   </div>
-                ))}
+                </div>
+                <div>
+                  <div className="text-slate-500">الموظف</div>
+                  <div className="font-bold text-slate-900 mt-0.5">
+                    {selectedPurchase.employeeName}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-500">الجهاز</div>
+                  <div className="font-bold text-slate-900 mt-0.5">
+                    {selectedPurchase.deviceName || '—'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="border border-slate-200 rounded-xl overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                    <tr>
+                      <th className="text-right py-2.5 px-3">الكود / الصنف</th>
+                      <th className="text-center py-2.5 px-3">الكمية</th>
+                      <th className="text-left py-2.5 px-3">سعر التكلفة</th>
+                      <th className="text-left py-2.5 px-3">الإجمالي</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {selectedPurchase.items.map((item, idx) => (
+                      <tr key={`${item.productId}_${idx}`}>
+                        <td className="py-2 px-3">
+                          <div className="font-semibold text-slate-900">{item.name}</div>
+                          <div className="font-mono-num text-[11px] text-slate-500">
+                            {item.code} · {item.unit}
+                          </div>
+                        </td>
+                        <td className="py-2 px-3 text-center font-mono-num">{item.qty}</td>
+                        <td className="py-2 px-3 text-left font-mono-num">
+                          {formatMoney(item.costPrice, settings.currency)}
+                        </td>
+                        <td className="py-2 px-3 text-left font-mono-num font-bold">
+                          {formatMoney(item.lineTotal, settings.currency)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {selectedPurchase.notes && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700">
+                  <strong>ملاحظات:</strong> {selectedPurchase.notes}
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs">
+                <div>
+                  <div className="text-slate-500">إجمالي الفاتورة</div>
+                  <div className="font-mono-num font-bold text-slate-900 text-sm mt-0.5">
+                    {formatMoney(selectedPurchase.total, settings.currency)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-500">المدفوع</div>
+                  <div className="font-mono-num font-bold text-emerald-700 text-sm mt-0.5">
+                    {formatMoney(selectedPurchase.paidAmount, settings.currency)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-500">المتبقي للمورد</div>
+                  <div className="font-mono-num font-bold text-red-700 text-sm mt-0.5">
+                    {formatMoney(selectedPurchase.remainingAmount, settings.currency)}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

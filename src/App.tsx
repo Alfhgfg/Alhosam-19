@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   Bell,
@@ -25,6 +25,12 @@ import {
   X,
 } from 'lucide-react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import {
+  NavigationProvider,
+  SUBTAB_TITLES,
+  useBackLayer,
+  useNavigation,
+} from './contexts/NavigationContext';
 import { StoreDataProvider, useStoreData } from './contexts/StoreDataContext';
 import { CustomersView } from './components/CustomersView';
 import { DashboardView } from './components/DashboardView';
@@ -39,6 +45,7 @@ import { ReturnsView } from './components/ReturnsView';
 import { StaffAuditView } from './components/StaffAuditView';
 import { SuppliersPurchasesView } from './components/SuppliersPurchasesView';
 import { SyncManagerModal } from './components/SyncManagerModal';
+import { BackButton, ModalSubPageHeader } from './components/UnifiedBackHeader';
 import type { NavSection } from './types';
 import {
   deviceTypeLabel,
@@ -79,8 +86,19 @@ const MainShell: React.FC = () => {
     dismissSyncNotice,
     dismissSaleAlert,
   } = useStoreData();
+  const {
+    activeSection,
+    activeSubTab,
+    canGoBack,
+    navigateTo,
+    goBack,
+    requestGuard,
+    resetHistoryToDashboard,
+  } = useNavigation();
 
-  const [activeSection, setActiveSection] = useState<NavSection>('dashboard');
+  const [visitedSections, setVisitedSections] = useState<Set<NavSection>>(
+    () => new Set(['dashboard'])
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [queueModalOpen, setQueueModalOpen] = useState(false);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -125,24 +143,51 @@ const MainShell: React.FC = () => {
     [isAdmin, hasPermission]
   );
 
+  const visibleNav = useMemo(() => navItems.filter((n) => n.visible), [navItems]);
+  const currentNav =
+    visibleNav.find((n) => n.id === activeSection) || visibleNav[0];
+
   const currentDeviceName = deviceRecord?.deviceName || deviceIdentity.deviceName;
   const isDeviceNameAuthorized =
     isAllowedDeviceName(deviceIdentity.deviceName) ||
     isAllowedDeviceName(deviceRecord?.deviceName);
 
-  if (
-    loading ||
-    !firebaseUser ||
-    !isActiveStaff ||
-    isDeviceBlocked ||
-    !isDeviceNameAuthorized
-  ) {
+  const isAuthenticatedShell =
+    !loading &&
+    Boolean(firebaseUser) &&
+    isActiveStaff &&
+    !isDeviceBlocked &&
+    isDeviceNameAuthorized;
+
+  // Keep visited visible sections mounted so search/filters/scroll/drafts stay intact on Back
+  useEffect(() => {
+    if (!isAuthenticatedShell) return;
+    setVisitedSections((prev) => {
+      if (prev.has(currentNav.id)) return prev;
+      const next = new Set(prev);
+      next.add(currentNav.id);
+      return next;
+    });
+  }, [currentNav.id, isAuthenticatedShell]);
+
+  // Register top-level drawers & modals with unified Back stack
+  const requestCloseMobileMenu = useBackLayer({
+    id: 'mobile-menu-drawer',
+    active: isAuthenticatedShell && mobileMenuOpen,
+    onClose: () => setMobileMenuOpen(false),
+  });
+
+  const requestCloseRenameModal = useBackLayer({
+    id: 'rename-device-modal',
+    active: isAuthenticatedShell && renameModalOpen,
+    onClose: () => setRenameModalOpen(false),
+    isDirty: () =>
+      renameModalOpen && deviceNameDraft.trim() !== currentDeviceName.trim(),
+  });
+
+  if (!isAuthenticatedShell) {
     return <LoginView />;
   }
-
-  const visibleNav = navItems.filter((n) => n.visible);
-  const currentNav =
-    visibleNav.find((n) => n.id === activeSection) || visibleNav[0];
 
   const DeviceIcon =
     deviceIdentity.deviceType === 'mobile'
@@ -152,10 +197,13 @@ const MainShell: React.FC = () => {
       : Laptop;
 
   const conflictCount = pendingOperations.filter((o) => o.status === 'conflict').length;
+  const subTabTitle = activeSubTab ? SUBTAB_TITLES[activeSubTab] : undefined;
 
-  const handleSelectNav = (id: NavSection) => {
-    setActiveSection(id);
-    setMobileMenuOpen(false);
+  const handleSelectNav = (id: NavSection, subTab?: string) => {
+    if (mobileMenuOpen) {
+      setMobileMenuOpen(false);
+    }
+    navigateTo(id, subTab);
   };
 
   const openRenameModal = () => {
@@ -169,7 +217,9 @@ const MainShell: React.FC = () => {
     const clean = deviceNameDraft.trim();
     if (!clean) return;
     if (!isAllowedDeviceName(clean)) {
-      setRenameError(`وفقاً للسياسة الأمنية، يجب أن يكون اسم الجهاز «${REQUIRED_DEVICE_NAME}» حصراً.`);
+      setRenameError(
+        `وفقاً للسياسة الأمنية، يجب أن يكون اسم الجهاز «${REQUIRED_DEVICE_NAME}» حصراً.`
+      );
       return;
     }
     setRenameError(null);
@@ -182,12 +232,20 @@ const MainShell: React.FC = () => {
     }
   };
 
-  const renderSection = () => {
-    switch (currentNav.id) {
+  const handleGuardedLogout = () => {
+    requestGuard(() => {
+      setMobileMenuOpen(false);
+      resetHistoryToDashboard();
+      void logout();
+    });
+  };
+
+  const renderSectionById = (sec: NavSection, isActive: boolean) => {
+    switch (sec) {
       case 'dashboard':
         return <DashboardView onNavigate={handleSelectNav} />;
       case 'pos':
-        return <PosView />;
+        return <PosView isActive={isActive} />;
       case 'products':
         return <ProductsView />;
       case 'inventory':
@@ -265,7 +323,7 @@ const MainShell: React.FC = () => {
             </button>
           </div>
           <button
-            onClick={logout}
+            onClick={handleGuardedLogout}
             className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 rounded-xl transition-colors cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
@@ -279,24 +337,21 @@ const MainShell: React.FC = () => {
         <div className="fixed inset-0 z-50 lg:hidden flex no-print">
           <div
             className="fixed inset-0 bg-slate-900/50"
-            onClick={() => setMobileMenuOpen(false)}
+            onClick={requestCloseMobileMenu}
           />
           <aside className="relative w-72 max-w-[82vw] bg-white h-full flex flex-col border-l border-slate-200 z-10">
-            <div className="h-14 px-4 border-b border-slate-200 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-emerald-700 text-white flex items-center justify-center">
-                  <Store className="w-4 h-4" />
+            <div className="h-14 px-3.5 border-b border-slate-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <BackButton onClick={requestCloseMobileMenu} compact />
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-700 text-white flex items-center justify-center shrink-0">
+                    <Store className="w-3.5 h-3.5" />
+                  </div>
+                  <span className="font-bold text-slate-900 text-sm truncate">
+                    {settings.storeName}
+                  </span>
                 </div>
-                <span className="font-bold text-slate-900 text-sm">
-                  {settings.storeName}
-                </span>
               </div>
-              <button
-                onClick={() => setMobileMenuOpen(false)}
-                className="p-1.5 text-slate-500 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
             </div>
 
             <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
@@ -338,7 +393,7 @@ const MainShell: React.FC = () => {
                 </button>
               </div>
               <button
-                onClick={logout}
+                onClick={handleGuardedLogout}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-red-700 hover:bg-red-50 rounded-xl cursor-pointer"
               >
                 <LogOut className="w-4 h-4" />
@@ -351,23 +406,42 @@ const MainShell: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Top Bar */}
-        <header className="h-14 bg-white border-b border-slate-200 px-4 lg:px-6 flex items-center justify-between gap-3 sticky top-0 z-30 no-print">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              onClick={() => setMobileMenuOpen(true)}
-              aria-label="فتح القائمة"
-              className="lg:hidden p-2 -mr-1 text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <div className="text-sm font-semibold text-slate-900 truncate">
-              {settings.storeName} <span className="text-slate-400">/</span>{' '}
-              <span className="text-emerald-700">{currentNav.label}</span>
+        {/* Unified Top Navigation Bar */}
+        <header className="h-14 bg-white border-b border-slate-200 px-3 sm:px-4 lg:px-6 flex items-center justify-between gap-2 sm:gap-3 sticky top-0 z-30 no-print">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+            {canGoBack ? (
+              <BackButton onClick={() => goBack(false)} compact />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="فتح القائمة"
+                className="lg:hidden p-2 -mr-1 text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer shrink-0"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            )}
+
+            <div className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5 min-w-0">
+              <span className={`${canGoBack ? 'hidden sm:inline' : 'inline'} text-slate-700`}>
+                {settings.storeName}
+              </span>
+              <span className={`${canGoBack ? 'hidden sm:inline' : 'inline'} text-slate-400`}>
+                /
+              </span>
+              <span className="text-emerald-700 truncate">{currentNav.label}</span>
+              {subTabTitle && (
+                <>
+                  <span className="hidden md:inline text-slate-400">/</span>
+                  <span className="hidden md:inline text-slate-700 truncate">
+                    {subTabTitle}
+                  </span>
+                </>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={openRenameModal}
@@ -417,7 +491,7 @@ const MainShell: React.FC = () => {
             {currentNav.id !== 'pos' && (
               <button
                 onClick={() => handleSelectNav('pos')}
-                className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                className="px-3 sm:px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap"
               >
                 شاشة البيع
               </button>
@@ -477,8 +551,22 @@ const MainShell: React.FC = () => {
           </div>
         )}
 
+        {/* Visited Sections Kept Mounted to Preserve Search, Filters & Form State on Back */}
         <main className="flex-1 p-3.5 sm:p-4 lg:p-6 pb-24 lg:pb-6 max-w-[1440px] w-full mx-auto">
-          {renderSection()}
+          {visibleNav
+            .filter((item) => visitedSections.has(item.id) || currentNav.id === item.id)
+            .map((item) => {
+              const isActive = currentNav.id === item.id;
+              return (
+                <div
+                  key={item.id}
+                  className={isActive ? 'block' : 'hidden no-print'}
+                  aria-hidden={!isActive}
+                >
+                  {renderSectionById(item.id, isActive)}
+                </div>
+              );
+            })}
         </main>
 
         {/* Mobile Bottom Quick Navigation */}
@@ -528,67 +616,59 @@ const MainShell: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 no-print">
           <form
             onSubmit={handleSaveDeviceName}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-base font-bold text-slate-900">تسمية هذا الجهاز</h3>
-              <button
-                type="button"
-                onClick={() => setRenameModalOpen(false)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            {renameError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg leading-relaxed">
-                {renameError}
-              </div>
-            )}
-            <div className="space-y-2">
-              <label className="block text-xs font-semibold text-slate-700">
-                الاسم الظاهر للمسؤول وفي الفواتير *
-              </label>
-              <input
-                required
-                type="text"
-                value={deviceNameDraft}
-                onChange={(e) => {
-                  setDeviceNameDraft(e.target.value);
-                  if (renameError) setRenameError(null);
-                }}
-                placeholder={`اكتب: ${REQUIRED_DEVICE_NAME}`}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-              />
-              <div className="flex items-center justify-between text-[11px] text-slate-500">
-                <span>{deviceTypeLabel(deviceIdentity.deviceType)} · {deviceIdentity.platform}</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeviceNameDraft(REQUIRED_DEVICE_NAME);
+            <ModalSubPageHeader
+              title="تسمية هذا الجهاز"
+              subtitle={`${deviceTypeLabel(deviceIdentity.deviceType)} · ${deviceIdentity.platform}`}
+              onBack={requestCloseRenameModal}
+            />
+            <div className="p-6 space-y-4">
+              {renameError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg leading-relaxed">
+                  {renameError}
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-slate-700">
+                  الاسم الظاهر للمسؤول وفي الفواتير *
+                </label>
+                <input
+                  required
+                  type="text"
+                  value={deviceNameDraft}
+                  onChange={(e) => {
+                    setDeviceNameDraft(e.target.value);
                     if (renameError) setRenameError(null);
                   }}
-                  className="text-emerald-700 font-semibold hover:underline cursor-pointer"
+                  placeholder={`اكتب: ${REQUIRED_DEVICE_NAME}`}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                />
+                <div className="flex items-center justify-between text-[11px] text-slate-500">
+                  <span>
+                    {deviceTypeLabel(deviceIdentity.deviceType)} · {deviceIdentity.platform}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeviceNameDraft(REQUIRED_DEVICE_NAME);
+                      if (renameError) setRenameError(null);
+                    }}
+                    className="text-emerald-700 font-semibold hover:underline cursor-pointer"
+                  >
+                    تعيين «{REQUIRED_DEVICE_NAME}»
+                  </button>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={savingDeviceName}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
                 >
-                  تعيين «{REQUIRED_DEVICE_NAME}»
+                  {savingDeviceName ? 'جاري الحفظ...' : 'حفظ الاسم'}
                 </button>
               </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setRenameModalOpen(false)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={savingDeviceName}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                {savingDeviceName ? 'جاري الحفظ...' : 'حفظ الاسم'}
-              </button>
             </div>
           </form>
         </div>
@@ -602,11 +682,13 @@ const MainShell: React.FC = () => {
 export default function App() {
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <StoreDataProvider>
-          <MainShell />
-        </StoreDataProvider>
-      </AuthProvider>
+      <NavigationProvider>
+        <AuthProvider>
+          <StoreDataProvider>
+            <MainShell />
+          </StoreDataProvider>
+        </AuthProvider>
+      </NavigationProvider>
     </ErrorBoundary>
   );
 }

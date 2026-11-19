@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import { Camera, Edit2, Plus, Search, Trash2, X } from 'lucide-react';
+import React, { useMemo, useRef, useState } from 'react';
+import { Camera, Edit2, Eye, Plus, Search, Trash2, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useBackLayer } from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import {
   createProduct,
@@ -8,12 +9,18 @@ import {
   updateProduct,
 } from '../services/accountingService';
 import type { Product } from '../types';
-import { formatMoney, formatNumber } from '../utils/format';
+import {
+  formatDateTime,
+  formatMoney,
+  formatNumber,
+  movementTypeLabel,
+} from '../utils/format';
 import { CameraBarcodeModal } from './CameraBarcodeModal';
+import { ModalSubPageHeader } from './UnifiedBackHeader';
 
 export const ProductsView: React.FC = () => {
   const { actorInfo, isAdmin, hasPermission } = useAuth();
-  const { products, settings, counters } = useStoreData();
+  const { products, stockMovements, settings, counters } = useStoreData();
 
   const canManage = isAdmin || hasPermission('canManageProducts');
 
@@ -22,6 +29,7 @@ export const ProductsView: React.FC = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [detailProduct, setDetailProduct] = useState<Product | null>(null);
 
   const [autoCode, setAutoCode] = useState(true);
   const [code, setCode] = useState('');
@@ -40,6 +48,66 @@ export const ProductsView: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  const initialFormRef = useRef({
+    autoCode: true,
+    code: '',
+    barcode: '',
+    name: '',
+    category: 'مواد غذائية',
+    unit: 'حبة',
+    costPrice: '',
+    sellPrice: '',
+    stock: '0',
+    minStock: '5',
+    description: '',
+    isActive: true,
+  });
+
+  const liveDetailProduct = useMemo(
+    () =>
+      detailProduct
+        ? products.find((p) => p.id === detailProduct.id) || detailProduct
+        : null,
+    [detailProduct, products]
+  );
+
+  const productMovements = useMemo(
+    () =>
+      liveDetailProduct
+        ? stockMovements.filter((m) => m.productId === liveDetailProduct.id)
+        : [],
+    [liveDetailProduct, stockMovements]
+  );
+
+  const requestCloseDetail = useBackLayer({
+    id: 'product-detail-modal',
+    active: Boolean(liveDetailProduct),
+    onClose: () => setDetailProduct(null),
+  });
+
+  const requestCloseProductModal = useBackLayer({
+    id: 'product-form-modal',
+    active: modalOpen,
+    onClose: () => setModalOpen(false),
+    isDirty: () => {
+      const snap = initialFormRef.current;
+      return (
+        autoCode !== snap.autoCode ||
+        code !== snap.code ||
+        barcode !== snap.barcode ||
+        name !== snap.name ||
+        category !== snap.category ||
+        unit !== snap.unit ||
+        costPrice !== snap.costPrice ||
+        sellPrice !== snap.sellPrice ||
+        stock !== snap.stock ||
+        minStock !== snap.minStock ||
+        description !== snap.description ||
+        isActive !== snap.isActive
+      );
+    },
+  });
+
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return products.filter((p) => {
@@ -56,36 +124,66 @@ export const ProductsView: React.FC = () => {
 
   const openAddModal = () => {
     setEditingProduct(null);
-    setAutoCode(true);
-    setCode('');
-    setBarcode('');
-    setName('');
-    setCategory('مواد غذائية');
-    setUnit('حبة');
-    setCostPrice('');
-    setSellPrice('');
-    setStock('0');
-    setMinStock('5');
-    setDescription('');
-    setIsActive(true);
+    const snap = {
+      autoCode: true,
+      code: '',
+      barcode: '',
+      name: '',
+      category: 'مواد غذائية',
+      unit: 'حبة',
+      costPrice: '',
+      sellPrice: '',
+      stock: '0',
+      minStock: '5',
+      description: '',
+      isActive: true,
+    };
+    initialFormRef.current = snap;
+    setAutoCode(snap.autoCode);
+    setCode(snap.code);
+    setBarcode(snap.barcode);
+    setName(snap.name);
+    setCategory(snap.category);
+    setUnit(snap.unit);
+    setCostPrice(snap.costPrice);
+    setSellPrice(snap.sellPrice);
+    setStock(snap.stock);
+    setMinStock(snap.minStock);
+    setDescription(snap.description);
+    setIsActive(snap.isActive);
     setErrorMsg(null);
     setModalOpen(true);
   };
 
   const openEditModal = (p: Product) => {
     setEditingProduct(p);
-    setAutoCode(false);
-    setCode(p.code);
-    setBarcode(p.barcode || '');
-    setName(p.name);
-    setCategory(p.category);
-    setUnit(p.unit);
-    setCostPrice(String(p.costPrice));
-    setSellPrice(String(p.sellPrice));
-    setStock(String(p.stock));
-    setMinStock(String(p.minStock));
-    setDescription(p.description || '');
-    setIsActive(p.isActive);
+    const snap = {
+      autoCode: false,
+      code: p.code,
+      barcode: p.barcode || '',
+      name: p.name,
+      category: p.category,
+      unit: p.unit,
+      costPrice: String(p.costPrice),
+      sellPrice: String(p.sellPrice),
+      stock: String(p.stock),
+      minStock: String(p.minStock),
+      description: p.description || '',
+      isActive: p.isActive,
+    };
+    initialFormRef.current = snap;
+    setAutoCode(snap.autoCode);
+    setCode(snap.code);
+    setBarcode(snap.barcode);
+    setName(snap.name);
+    setCategory(snap.category);
+    setUnit(snap.unit);
+    setCostPrice(snap.costPrice);
+    setSellPrice(snap.sellPrice);
+    setStock(snap.stock);
+    setMinStock(snap.minStock);
+    setDescription(snap.description);
+    setIsActive(snap.isActive);
     setErrorMsg(null);
     setModalOpen(true);
   };
@@ -240,16 +338,18 @@ export const ProductsView: React.FC = () => {
                   <th className="text-center py-3 px-4 font-semibold">الكمية الحالية</th>
                   <th className="text-center py-3 px-4 font-semibold">الحد الأدنى</th>
                   <th className="text-right py-3 px-4 font-semibold">الحالة</th>
-                  {canManage && (
-                    <th className="text-center py-3 px-4 font-semibold">إجراءات</th>
-                  )}
+                  <th className="text-center py-3 px-4 font-semibold">إجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredProducts.map((p) => {
                   const isLow = p.stock <= p.minStock;
                   return (
-                    <tr key={p.id} className="hover:bg-slate-50">
+                    <tr
+                      key={p.id}
+                      onClick={() => setDetailProduct(p)}
+                      className="hover:bg-slate-50 cursor-pointer"
+                    >
                       <td className="py-3 px-4 font-mono-num">
                         <div className="font-semibold text-slate-900">{p.code}</div>
                         {p.barcode && (
@@ -297,28 +397,38 @@ export const ProductsView: React.FC = () => {
                           <span className="text-emerald-700 font-medium">متوفر</span>
                         )}
                       </td>
-                      {canManage && (
-                        <td className="py-3 px-4">
-                          <div className="flex items-center justify-center gap-2">
+                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setDetailProduct(p)}
+                            className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+                            title="عرض تفاصيل الصنف"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          {canManage && (
                             <button
+                              type="button"
                               onClick={() => openEditModal(p)}
                               className="p-1.5 text-slate-600 hover:text-emerald-700 hover:bg-slate-100 rounded-lg cursor-pointer"
                               title="تعديل"
                             >
                               <Edit2 className="w-4 h-4" />
                             </button>
-                            {isAdmin && (
-                              <button
-                                onClick={() => handleDelete(p)}
-                                className="p-1.5 text-slate-500 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer"
-                                title="حذف"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      )}
+                          )}
+                          {canManage && isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(p)}
+                              className="p-1.5 text-slate-500 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer"
+                              title="حذف"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -328,31 +438,163 @@ export const ProductsView: React.FC = () => {
         )}
       </div>
 
+      {/* Product Detail Modal */}
+      {liveDetailProduct && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-2xl overflow-hidden shadow-xl">
+            <ModalSubPageHeader
+              title={`تفاصيل الصنف: ${liveDetailProduct.name}`}
+              subtitle={`كود: ${liveDetailProduct.code}${
+                liveDetailProduct.barcode ? ` · باركود: ${liveDetailProduct.barcode}` : ''
+              }`}
+              onBack={requestCloseDetail}
+              actions={
+                canManage ? (
+                  <button
+                    type="button"
+                    onClick={() => openEditModal(liveDetailProduct)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span>تعديل البيانات</span>
+                  </button>
+                ) : undefined
+              }
+            />
+
+            <div className="p-6 space-y-5 max-h-[80dvh] overflow-y-auto">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <div className="text-slate-500">التصنيف والوحدة</div>
+                  <div className="font-bold text-slate-900 mt-1">
+                    {liveDetailProduct.category} · {liveDetailProduct.unit}
+                  </div>
+                </div>
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <div className="text-slate-500">سعر البيع</div>
+                  <div className="font-bold font-mono-num text-emerald-700 text-sm mt-1">
+                    {formatMoney(liveDetailProduct.sellPrice, settings.currency)}
+                  </div>
+                </div>
+                {isAdmin && (
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                    <div className="text-slate-500">سعر الشراء / الربح</div>
+                    <div className="font-bold font-mono-num text-slate-900 mt-1">
+                      {formatMoney(liveDetailProduct.costPrice, settings.currency)}
+                    </div>
+                    <div className="text-[11px] font-mono-num text-emerald-700">
+                      هامش:{' '}
+                      {formatMoney(
+                        liveDetailProduct.sellPrice - liveDetailProduct.costPrice,
+                        settings.currency
+                      )}
+                    </div>
+                  </div>
+                )}
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <div className="text-slate-500">الكمية الحالية</div>
+                  <div
+                    className={`font-bold font-mono-num text-sm mt-1 ${
+                      liveDetailProduct.stock === 0
+                        ? 'text-red-700'
+                        : liveDetailProduct.stock <= liveDetailProduct.minStock
+                        ? 'text-amber-700'
+                        : 'text-slate-900'
+                    }`}
+                  >
+                    {formatNumber(liveDetailProduct.stock)} {liveDetailProduct.unit}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    الحد الأدنى: {formatNumber(liveDetailProduct.minStock)}
+                  </div>
+                </div>
+              </div>
+
+              {liveDetailProduct.description && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700">
+                  <span className="font-bold text-slate-900">الوصف: </span>
+                  {liveDetailProduct.description}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <h4 className="text-sm font-bold text-slate-900">
+                  سجل حركات هذا الصنف ({productMovements.length})
+                </h4>
+                {productMovements.length === 0 ? (
+                  <p className="text-xs text-slate-500">
+                    لا توجد حركات مسجلة لهذا الصنف حتى الآن.
+                  </p>
+                ) : (
+                  <div className="border border-slate-200 rounded-xl overflow-x-auto max-h-64 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                        <tr>
+                          <th className="text-right py-2 px-3">التاريخ</th>
+                          <th className="text-right py-2 px-3">الحركة</th>
+                          <th className="text-center py-2 px-3">التغير</th>
+                          <th className="text-center py-2 px-3">قبل ← بعد</th>
+                          <th className="text-right py-2 px-3">السبب / المرجع</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {productMovements.slice(0, 30).map((m) => (
+                          <tr key={m.id}>
+                            <td className="py-2 px-3 text-slate-500 whitespace-nowrap">
+                              {formatDateTime(m.createdAt)}
+                            </td>
+                            <td className="py-2 px-3 font-medium">
+                              {movementTypeLabel(m.type)}
+                            </td>
+                            <td
+                              className={`py-2 px-3 text-center font-mono-num font-bold ${
+                                m.qtyChange > 0
+                                  ? 'text-emerald-700'
+                                  : m.qtyChange < 0
+                                  ? 'text-red-700'
+                                  : 'text-slate-600'
+                              }`}
+                            >
+                              {m.qtyChange > 0 ? `+${m.qtyChange}` : m.qtyChange}
+                            </td>
+                            <td className="py-2 px-3 text-center font-mono-num text-slate-600">
+                              {m.previousStock} ← {m.newStock}
+                            </td>
+                            <td className="py-2 px-3 text-slate-600">{m.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add/Edit Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto">
           <form
             onSubmit={handleSave}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-xl p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-xl overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-base font-bold text-slate-900">
-                {editingProduct ? `تعديل الصنف (${editingProduct.code})` : 'إضافة صنف جديد'}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+            <ModalSubPageHeader
+              title={
+                editingProduct
+                  ? `تعديل الصنف (${editingProduct.code})`
+                  : 'إضافة صنف جديد'
+              }
+              onBack={requestCloseProductModal}
+            />
 
-            {errorMsg && (
-              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">
-                {errorMsg}
-              </div>
-            )}
+            <div className="p-6 space-y-4">
+              {errorMsg && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">
+                  {errorMsg}
+                </div>
+              )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               {!editingProduct && (
@@ -537,19 +779,13 @@ export const ProductsView: React.FC = () => {
 
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
               <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
                 type="submit"
                 disabled={saving}
                 className="px-5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
               >
                 {saving ? 'جاري الحفظ...' : 'حفظ البيانات'}
               </button>
+            </div>
             </div>
           </form>
         </div>

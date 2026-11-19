@@ -24,7 +24,7 @@ import {
 import { InvoiceDetailModal } from './InvoiceDetailModal';
 
 interface DashboardViewProps {
-  onNavigate: (sec: NavSection) => void;
+  onNavigate: (sec: NavSection, subTab?: string) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
@@ -307,7 +307,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         {isAdmin && (
           <div
-            onClick={() => onNavigate('staff')}
+            onClick={() => onNavigate('staff', 'devices')}
             className="bg-white border border-slate-200 rounded-xl p-4 space-y-2 hover:border-emerald-500 transition-colors cursor-pointer"
           >
             <div className="flex items-center justify-between text-xs text-slate-500">
@@ -536,7 +536,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
               <h2 className="text-sm font-bold text-slate-900">نشاط الموظفين</h2>
               <button
-                onClick={() => onNavigate('staff')}
+                onClick={() => onNavigate('staff', 'staff')}
                 className="text-xs font-medium text-emerald-700 hover:underline cursor-pointer"
               >
                 إدارة الموظفين
@@ -582,7 +582,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
               <h2 className="text-sm font-bold text-slate-900">أحدث سجلات المراقبة والتدقيق</h2>
               <button
-                onClick={() => onNavigate('staff')}
+                onClick={() => onNavigate('staff', 'audit')}
                 className="text-xs font-medium text-emerald-700 hover:underline cursor-pointer"
               >
                 عرض السجل الكامل

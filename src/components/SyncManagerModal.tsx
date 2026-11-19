@@ -9,11 +9,12 @@ import {
   Trash2,
   Wifi,
   WifiOff,
-  X,
 } from 'lucide-react';
+import { useBackLayer } from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import type { PendingOperationType } from '../types';
 import { formatDateTime } from '../utils/format';
+import { ModalSubPageHeader } from './UnifiedBackHeader';
 
 interface SyncManagerModalProps {
   open: boolean;
@@ -67,6 +68,12 @@ export const SyncManagerModal: React.FC<SyncManagerModalProps> = ({ open, onClos
   const [tab, setTab] = useState<'pending' | 'synced'>('pending');
   const [confirmDiscardId, setConfirmDiscardId] = useState<string | null>(null);
 
+  const requestBack = useBackLayer({
+    id: 'sync-manager',
+    active: open,
+    onClose,
+  });
+
   const syncedOperations = useMemo(
     () =>
       allQueueOperations
@@ -100,24 +107,11 @@ export const SyncManagerModal: React.FC<SyncManagerModalProps> = ({ open, onClos
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto no-print">
       <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl overflow-hidden shadow-xl">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">
-              إدارة المزامنة والعمل دون اتصال
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              حفظ فوري في قاعدة البيانات المحلية الدائمة وترحيل دقيق إلى Firebase دون تكرار
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 text-slate-500 hover:text-slate-900 cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+        <ModalSubPageHeader
+          title="إدارة المزامنة والعمل دون اتصال"
+          subtitle="حفظ فوري في قاعدة البيانات المحلية الدائمة وترحيل دقيق إلى Firebase دون تكرار"
+          onBack={requestBack}
+        />
 
         <div className="p-5 space-y-4">
           {/* Status Cards Grid */}
@@ -417,15 +411,6 @@ export const SyncManagerModal: React.FC<SyncManagerModalProps> = ({ open, onClos
             </div>
           )}
 
-          <div className="flex justify-end pt-2 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold border border-slate-200 rounded-xl cursor-pointer hover:bg-slate-50"
-            >
-              إغلاق
-            </button>
-          </div>
         </div>
       </div>
     </div>

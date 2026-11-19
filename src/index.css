@@ -34,12 +34,18 @@
 @media print {
   @page {
     size: auto;
-    margin: 12mm;
+    margin: 10mm;
   }
 
+  html,
   body {
     background: #ffffff !important;
     color: #000000 !important;
+    direction: rtl !important;
+    overflow: visible !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
   .no-print {
@@ -57,5 +63,90 @@
     margin: 0 !important;
     width: 100% !important;
     max-width: 100% !important;
+  }
+
+  /* Isolate invoice modal portal when printing an invoice */
+  body[data-invoice-modal-open='true'] > *:not(#invoice-print-root) {
+    display: none !important;
+  }
+
+  body[data-invoice-modal-open='true'] #invoice-print-root {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+
+  body[data-invoice-modal-open='true'] .invoice-modal-shell {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body[data-invoice-modal-open='true'] .invoice-modal-scroll {
+    overflow: visible !important;
+    max-height: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+  }
+
+  .invoice-sheet {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    background: #ffffff !important;
+    margin: 0 auto !important;
+  }
+
+  .invoice-sheet[data-paper='a4'] {
+    width: 100% !important;
+    max-width: 100% !important;
+    border: none !important;
+    padding: 0 !important;
+  }
+
+  .invoice-sheet[data-paper='80mm'] {
+    width: 74mm !important;
+    max-width: 74mm !important;
+    border: none !important;
+    padding: 0 !important;
+  }
+
+  .invoice-sheet[data-paper='58mm'] {
+    width: 54mm !important;
+    max-width: 54mm !important;
+    border: none !important;
+    padding: 0 !important;
+  }
+
+  .invoice-avoid-break {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .invoice-items-table thead {
+    display: table-header-group !important;
+  }
+
+  .invoice-items-table tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
   }
 }

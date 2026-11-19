@@ -209,12 +209,27 @@ service cloud.firestore {
 
     function isValidStoreSettings(data) {
       return data.keys().hasAll(['storeName', 'currency', 'updatedAt']) &&
-        data.keys().hasOnly(['storeName', 'phone', 'address', 'currency', 'receiptFooter', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'storeName', 'phone', 'address', 'contactInfo', 'promoText',
+          'currency', 'receiptFooter', 'logoMode', 'logoDataUrl',
+          'defaultPaperSize', 'showCustomerInfo', 'showSellerInfo',
+          'showProductCode', 'showDiscount', 'showQrCode', 'updatedAt'
+        ]) &&
         data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 120 &&
         (!('phone' in data) || (data.phone is string && data.phone.size() <= 40)) &&
         (!('address' in data) || (data.address is string && data.address.size() <= 240)) &&
+        (!('contactInfo' in data) || (data.contactInfo is string && data.contactInfo.size() <= 240)) &&
+        (!('promoText' in data) || (data.promoText is string && data.promoText.size() <= 300)) &&
         data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 20 &&
         (!('receiptFooter' in data) || (data.receiptFooter is string && data.receiptFooter.size() <= 300)) &&
+        (!('logoMode' in data) || (data.logoMode in ['default', 'minimal', 'custom', 'none'])) &&
+        (!('logoDataUrl' in data) || (data.logoDataUrl is string && data.logoDataUrl.size() <= 36000)) &&
+        (!('defaultPaperSize' in data) || (data.defaultPaperSize in ['a4', '80mm', '58mm'])) &&
+        (!('showCustomerInfo' in data) || data.showCustomerInfo is bool) &&
+        (!('showSellerInfo' in data) || data.showSellerInfo is bool) &&
+        (!('showProductCode' in data) || data.showProductCode is bool) &&
+        (!('showDiscount' in data) || data.showDiscount is bool) &&
+        (!('showQrCode' in data) || data.showQrCode is bool) &&
         data.updatedAt is timestamp;
     }
 

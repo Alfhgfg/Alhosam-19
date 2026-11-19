@@ -1,6 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { ClipboardCheck, Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  useNavigation,
+  useSectionDirtyGuard,
+} from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import { recordStockAdjustment } from '../services/accountingService';
 import {
@@ -13,11 +17,19 @@ import {
 export const InventoryView: React.FC = () => {
   const { actorInfo, isAdmin, hasPermission } = useAuth();
   const { products, stockMovements, settings, reservedStockByProductId } = useStoreData();
+  const { activeSection, activeSubTab, setSubTab } = useNavigation();
 
   const canStocktake =
     isAdmin || hasPermission('canStocktake') || hasPermission('canManageProducts');
 
-  const [tab, setTab] = useState<'levels' | 'stocktake' | 'movements'>('levels');
+  const tab: 'levels' | 'stocktake' | 'movements' =
+    activeSection === 'inventory' &&
+    (activeSubTab === 'levels' ||
+      (activeSubTab === 'stocktake' && canStocktake) ||
+      activeSubTab === 'movements')
+      ? activeSubTab
+      : 'levels';
+  const setTab = (next: 'levels' | 'stocktake' | 'movements') => setSubTab(next);
   const [searchCode, setSearchCode] = useState('');
 
   // Stocktake / adjustment form
@@ -29,6 +41,17 @@ export const InventoryView: React.FC = () => {
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
+
+  useSectionDirtyGuard('inventory', {
+    isDirty: () =>
+      tab === 'stocktake' &&
+      (selectedProdId !== '' || qtyValue !== '' || reason.trim() !== ''),
+    onDiscard: () => {
+      setSelectedProdId('');
+      setQtyValue('');
+      setReason('');
+    },
+  });
 
   const selectedProduct = useMemo(
     () => products.find((p) => p.id === selectedProdId) || null,

@@ -102,14 +102,24 @@
     },
     "StoreSettings": {
       "title": "StoreSettings",
-      "description": "Store profile and display configuration",
+      "description": "Store profile, invoice customization, and print display configuration",
       "type": "object",
       "properties": {
         "storeName": { "type": "string", "minLength": 1, "maxLength": 120 },
         "phone": { "type": "string", "maxLength": 40 },
         "address": { "type": "string", "maxLength": 240 },
+        "contactInfo": { "type": "string", "maxLength": 240 },
+        "promoText": { "type": "string", "maxLength": 300 },
         "currency": { "type": "string", "minLength": 1, "maxLength": 20 },
         "receiptFooter": { "type": "string", "maxLength": 300 },
+        "logoMode": { "type": "string", "enum": ["default", "minimal", "custom", "none"] },
+        "logoDataUrl": { "type": "string", "maxLength": 36000 },
+        "defaultPaperSize": { "type": "string", "enum": ["a4", "80mm", "58mm"] },
+        "showCustomerInfo": { "type": "boolean" },
+        "showSellerInfo": { "type": "boolean" },
+        "showProductCode": { "type": "boolean" },
+        "showDiscount": { "type": "boolean" },
+        "showQrCode": { "type": "boolean" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["storeName", "currency", "updatedAt"]

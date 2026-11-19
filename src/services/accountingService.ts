@@ -3333,12 +3333,26 @@ export async function updateStoreSettings(
   settings: Omit<StoreSettings, 'updatedAt'>
 ): Promise<void> {
   try {
+    const cleanLogoDataUrl =
+      settings.logoDataUrl && settings.logoDataUrl.length <= FIELD_LIMITS.logoDataUrlMax
+        ? settings.logoDataUrl
+        : '';
     await setDoc(doc(db, 'settings', 'store'), {
       storeName: truncateText(settings.storeName, FIELD_LIMITS.shortNameMax),
       phone: truncateText(settings.phone, FIELD_LIMITS.phoneMax),
       address: truncateText(settings.address, FIELD_LIMITS.addressMax),
+      contactInfo: truncateText(settings.contactInfo, FIELD_LIMITS.contactInfoMax),
+      promoText: truncateText(settings.promoText, FIELD_LIMITS.promoTextMax),
       currency: truncateText(settings.currency, FIELD_LIMITS.currencyMax),
       receiptFooter: truncateText(settings.receiptFooter, FIELD_LIMITS.notesMax),
+      logoMode: settings.logoMode || 'default',
+      logoDataUrl: cleanLogoDataUrl,
+      defaultPaperSize: settings.defaultPaperSize || 'a4',
+      showCustomerInfo: settings.showCustomerInfo ?? true,
+      showSellerInfo: settings.showSellerInfo ?? true,
+      showProductCode: settings.showProductCode ?? true,
+      showDiscount: settings.showDiscount ?? true,
+      showQrCode: settings.showQrCode ?? true,
       updatedAt: serverTimestamp(),
     });
     await setDoc(

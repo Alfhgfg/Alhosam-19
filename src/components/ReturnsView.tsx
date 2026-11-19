@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Ban, RotateCcw, Search } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useBackLayer } from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import {
   cancelSaleInvoice,
@@ -12,6 +13,7 @@ import {
   formatMoney,
   saleStatusLabel,
 } from '../utils/format';
+import { BackButton } from './UnifiedBackHeader';
 
 export const ReturnsView: React.FC = () => {
   const { actorInfo, isAdmin, hasPermission } = useAuth();
@@ -30,6 +32,24 @@ export const ReturnsView: React.FC = () => {
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
+
+  const hasDirtyReturn = Boolean(
+    selectedSale &&
+      (reason.trim() !== '' || Object.values(returnQtys).some((q) => q > 0))
+  );
+
+  const requestCloseSale = useBackLayer({
+    id: 'returns-selected-sale',
+    active: Boolean(selectedSale),
+    onClose: () => setSelectedSale(null),
+    isDirty: () => hasDirtyReturn,
+    dirtyMessage:
+      'توجد بيانات مرتجع غير محفوظة لهذه الفاتورة، هل تريد الخروج دون حفظ؟',
+    onDiscard: () => {
+      setReturnQtys({});
+      setReason('');
+    },
+  });
 
   const returnableSales = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -208,15 +228,18 @@ export const ReturnsView: React.FC = () => {
             </div>
           ) : (
             <form onSubmit={handleReturnSubmit} className="space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">
-                    معالجة الفاتورة {selectedSale.invoiceNumber}
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    العميل: {selectedSale.customerName} · الإجمالي:{' '}
-                    {formatMoney(selectedSale.total, settings.currency)}
-                  </p>
+              <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <BackButton onClick={requestCloseSale} compact />
+                  <div className="min-w-0">
+                    <h3 className="text-base font-bold text-slate-900 truncate">
+                      معالجة الفاتورة {selectedSale.invoiceNumber}
+                    </h3>
+                    <p className="text-xs text-slate-500 truncate">
+                      العميل: {selectedSale.customerName} · الإجمالي:{' '}
+                      {formatMoney(selectedSale.total, settings.currency)}
+                    </p>
+                  </div>
                 </div>
               </div>
 

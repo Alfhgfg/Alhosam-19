@@ -1,6 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Plus, Wallet } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  useNavigation,
+  useSectionDirtyGuard,
+} from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import {
   adjustCashBoxManual,
@@ -31,8 +35,18 @@ export const FinanceView: React.FC = () => {
 
   const canManageExp = isAdmin || hasPermission('canManageExpenses');
   const canViewReports = isAdmin || hasPermission('canViewReports');
+  const { activeSection, activeSubTab, setSubTab } = useNavigation();
 
-  const [tab, setTab] = useState<'cashbox' | 'expenses' | 'vouchers' | 'pnl'>('cashbox');
+  const tab: 'cashbox' | 'expenses' | 'vouchers' | 'pnl' =
+    activeSection === 'finance' &&
+    (activeSubTab === 'cashbox' ||
+      activeSubTab === 'expenses' ||
+      activeSubTab === 'vouchers' ||
+      (activeSubTab === 'pnl' && canViewReports))
+      ? activeSubTab
+      : 'cashbox';
+  const setTab = (next: 'cashbox' | 'expenses' | 'vouchers' | 'pnl') => setSubTab(next);
+
   const [pnlPeriod, setPnlPeriod] = useState<'today' | 'month' | 'year' | 'all'>('month');
 
   // Cash adjustment (Admin)
@@ -56,6 +70,37 @@ export const FinanceView: React.FC = () => {
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
+
+  useSectionDirtyGuard('finance', {
+    isDirty: () => {
+      if (tab === 'cashbox') {
+        return cashAdjAmt !== '' || cashAdjDesc.trim() !== '';
+      }
+      if (tab === 'expenses') {
+        return (
+          expTitle.trim() !== '' || expAmount !== '' || expNotes.trim() !== ''
+        );
+      }
+      if (tab === 'vouchers') {
+        return vchPartyId !== '' || vchAmount !== '' || vchNotes.trim() !== '';
+      }
+      return false;
+    },
+    onDiscard: () => {
+      if (tab === 'cashbox') {
+        setCashAdjAmt('');
+        setCashAdjDesc('');
+      } else if (tab === 'expenses') {
+        setExpTitle('');
+        setExpAmount('');
+        setExpNotes('');
+      } else if (tab === 'vouchers') {
+        setVchPartyId('');
+        setVchAmount('');
+        setVchNotes('');
+      }
+    },
+  });
 
   const pnl = useMemo(() => {
     const inPeriod = (ts: typeof sales[number]['createdAt']) => {

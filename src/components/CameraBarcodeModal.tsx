@@ -11,8 +11,9 @@ import {
   ScanBarcode,
   Volume2,
   VolumeX,
-  X,
 } from 'lucide-react';
+import { useBackLayer } from '../contexts/NavigationContext';
+import { BackButton } from './UnifiedBackHeader';
 
 export interface CameraScanResult {
   ok: boolean;
@@ -98,6 +99,12 @@ export const CameraBarcodeModal: React.FC<CameraBarcodeModalProps> = ({
 
   const lastCodeRef = useRef<{ code: string; at: number }>({ code: '', at: 0 });
   const closingRef = useRef(false);
+
+  const requestBack = useBackLayer({
+    id: 'camera-barcode',
+    active: open,
+    onClose,
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -259,12 +266,15 @@ export const CameraBarcodeModal: React.FC<CameraBarcodeModalProps> = ({
     <div className="fixed inset-0 z-50 bg-slate-950/75 flex items-center justify-center p-4 overflow-y-auto">
       <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-lg overflow-hidden shadow-xl">
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Camera className="w-4 h-4 text-emerald-700" />
-            <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+        <div className="px-4 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <BackButton onClick={requestBack} compact />
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Camera className="w-4 h-4 text-emerald-700 shrink-0" />
+              <h3 className="text-sm font-bold text-slate-900 truncate">{title}</h3>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => setSoundEnabled((s) => !s)}
@@ -288,14 +298,6 @@ export const CameraBarcodeModal: React.FC<CameraBarcodeModalProps> = ({
                 <span>تبديل الكاميرا</span>
               </button>
             )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-200/60 rounded-lg cursor-pointer"
-              aria-label="إغلاق"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
         </div>
 
@@ -361,13 +363,15 @@ export const CameraBarcodeModal: React.FC<CameraBarcodeModalProps> = ({
               </span>
             )}
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
-            >
-              {allowContinuous && continuous ? 'إنهاء المسح' : 'إغلاق'}
-            </button>
+            {allowContinuous && continuous && (
+              <button
+                type="button"
+                onClick={requestBack}
+                className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+              >
+                إنهاء المسح
+              </button>
+            )}
           </div>
         </div>
       </div>

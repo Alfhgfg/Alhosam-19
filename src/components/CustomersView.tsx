@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Banknote,
   Edit2,
@@ -6,9 +6,9 @@ import {
   Plus,
   Printer,
   Search,
-  X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useBackLayer } from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import {
   createCustomer,
@@ -22,6 +22,7 @@ import {
   paymentMethodLabel,
 } from '../utils/format';
 import { InvoiceDetailModal } from './InvoiceDetailModal';
+import { ModalSubPageHeader } from './UnifiedBackHeader';
 
 export const CustomersView: React.FC = () => {
   const { actorInfo, isAdmin } = useAuth();
@@ -84,8 +85,50 @@ export const CustomersView: React.FC = () => {
     [selectedCustomer, customers]
   );
 
+  const initialFormSnapRef = useRef({
+    name: '',
+    phone: '',
+    address: '',
+    notes: '',
+  });
+  const initialPayAmtRef = useRef('');
+
+  const requestCloseStatement = useBackLayer({
+    id: 'customer-statement',
+    active: Boolean(liveSelectedCustomer),
+    onClose: () => setSelectedCustomer(null),
+  });
+
+  const requestCloseCustomerForm = useBackLayer({
+    id: 'customer-form',
+    active: formOpen,
+    onClose: () => setFormOpen(false),
+    isDirty: () => {
+      const s = initialFormSnapRef.current;
+      return (
+        name !== s.name ||
+        phone !== s.phone ||
+        address !== s.address ||
+        notes !== s.notes
+      );
+    },
+  });
+
+  const requestClosePayment = useBackLayer({
+    id: 'customer-payment',
+    active: Boolean(payCustomer),
+    onClose: () => setPayCustomer(null),
+    isDirty: () =>
+      payAmount !== initialPayAmtRef.current || payNotes.trim() !== '',
+    onDiscard: () => {
+      setPayAmount('');
+      setPayNotes('');
+    },
+  });
+
   const openAdd = () => {
     setEditingCustomer(null);
+    initialFormSnapRef.current = { name: '', phone: '', address: '', notes: '' };
     setName('');
     setPhone('');
     setAddress('');
@@ -96,10 +139,17 @@ export const CustomersView: React.FC = () => {
 
   const openEdit = (c: Customer) => {
     setEditingCustomer(c);
-    setName(c.name);
-    setPhone(c.phone || '');
-    setAddress(c.address || '');
-    setNotes(c.notes || '');
+    const snap = {
+      name: c.name,
+      phone: c.phone || '',
+      address: c.address || '',
+      notes: c.notes || '',
+    };
+    initialFormSnapRef.current = snap;
+    setName(snap.name);
+    setPhone(snap.phone);
+    setAddress(snap.address);
+    setNotes(snap.notes);
     setErrorMsg(null);
     setFormOpen(true);
   };
@@ -293,8 +343,10 @@ export const CustomersView: React.FC = () => {
                         </button>
                         <button
                           onClick={() => {
+                            const initAmt = c.balanceDue > 0 ? String(c.balanceDue) : '';
+                            initialPayAmtRef.current = initAmt;
                             setPayCustomer(c);
-                            setPayAmount(c.balanceDue > 0 ? String(c.balanceDue) : '');
+                            setPayAmount(initAmt);
                             setPayNotes('');
                           }}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 cursor-pointer whitespace-nowrap"
@@ -322,32 +374,24 @@ export const CustomersView: React.FC = () => {
       {/* Customer Statement Modal */}
       {liveSelectedCustomer && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl overflow-hidden print-container">
-            <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between no-print">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  كشف حساب العميل: {liveSelectedCustomer.name}
-                </h3>
-                <p className="text-xs text-slate-500 font-mono-num">
-                  {liveSelectedCustomer.customerCode} · {liveSelectedCustomer.phone || 'بدون هاتف'}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl overflow-hidden print-container shadow-xl">
+            <ModalSubPageHeader
+              title={`كشف حساب العميل: ${liveSelectedCustomer.name}`}
+              subtitle={`${liveSelectedCustomer.customerCode} · ${
+                liveSelectedCustomer.phone || 'بدون هاتف'
+              }`}
+              onBack={requestCloseStatement}
+              actions={
                 <button
+                  type="button"
                   onClick={() => window.print()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg cursor-pointer"
                 >
                   <Printer className="w-3.5 h-3.5" />
                   <span>طباعة الكشف</span>
                 </button>
-                <button
-                  onClick={() => setSelectedCustomer(null)}
-                  className="p-1.5 text-slate-500 hover:text-slate-900 cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+              }
+            />
 
             <div className="p-6 space-y-5">
               <div className="grid grid-cols-3 gap-4 bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm">
@@ -468,82 +512,69 @@ export const CustomersView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleSaveCustomer}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                {editingCustomer ? 'تعديل بيانات العميل' : 'إضافة عميل جديد'}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setFormOpen(false)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  اسم العميل *
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
+            <ModalSubPageHeader
+              title={editingCustomer ? 'تعديل بيانات العميل' : 'إضافة عميل جديد'}
+              onBack={requestCloseCustomerForm}
+            />
+            <div className="p-6 space-y-4">
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    اسم العميل *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    رقم الهاتف
+                  </label>
+                  <input
+                    type="text"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    العنوان
+                  </label>
+                  <input
+                    type="text"
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    ملاحظات
+                  </label>
+                  <input
+                    type="text"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  رقم الهاتف
-                </label>
-                <input
-                  type="text"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
-                />
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
+                >
+                  {saving ? 'جاري الحفظ...' : 'حفظ'}
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  العنوان
-                </label>
-                <input
-                  type="text"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  ملاحظات
-                </label>
-                <input
-                  type="text"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setFormOpen(false)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                {saving ? 'جاري الحفظ...' : 'حفظ'}
-              </button>
             </div>
           </form>
         </div>
@@ -554,69 +585,56 @@ export const CustomersView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleReceivePayment}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                سند قبض من العميل: {payCustomer.name}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setPayCustomer(null)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
-              الرصيد المستحق حالياً:{' '}
-              <strong className="font-mono-num text-red-700">
-                {formatMoney(payCustomer.balanceDue, settings.currency)}
-              </strong>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  المبلغ المستلم ({settings.currency}) *
-                </label>
-                <input
-                  required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={payAmount}
-                  onChange={(e) => setPayAmount(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
-                />
+            <ModalSubPageHeader
+              title={`سند قبض من العميل: ${payCustomer.name}`}
+              onBack={requestClosePayment}
+            />
+            <div className="p-6 space-y-4">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+                الرصيد المستحق حالياً:{' '}
+                <strong className="font-mono-num text-red-700">
+                  {formatMoney(payCustomer.balanceDue, settings.currency)}
+                </strong>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  ملاحظات السند
-                </label>
-                <input
-                  type="text"
-                  value={payNotes}
-                  onChange={(e) => setPayNotes(e.target.value)}
-                  placeholder="مثال: دفعة نقدية من الحساب"
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    المبلغ المستلم ({settings.currency}) *
+                  </label>
+                  <input
+                    required
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={payAmount}
+                    onChange={(e) => setPayAmount(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    ملاحظات السند
+                  </label>
+                  <input
+                    type="text"
+                    value={payNotes}
+                    onChange={(e) => setPayNotes(e.target.value)}
+                    placeholder="مثال: دفعة نقدية من الحساب"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
               </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setPayCustomer(null)}
-                className="px-4 py-2 text-xs border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={paying}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
-              >
-                {paying ? 'جاري التسجيل...' : 'تأكيد القبض وتحديث الصندوق'}
-              </button>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={paying}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg cursor-pointer"
+                >
+                  {paying ? 'جاري التسجيل...' : 'تأكيد القبض وتحديث الصندوق'}
+                </button>
+              </div>
             </div>
           </form>
         </div>

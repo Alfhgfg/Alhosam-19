@@ -13,12 +13,17 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  useBackLayer,
+  useSectionDirtyGuard,
+} from '../contexts/NavigationContext';
 import { useStoreData } from '../contexts/StoreDataContext';
 import { createCustomer, executeSale } from '../services/accountingService';
 import type { Customer, PaymentMethod, Product, SaleInvoice } from '../types';
 import { formatMoney, formatNumber, generateDocId, roundMoney } from '../utils/format';
 import { CameraBarcodeModal } from './CameraBarcodeModal';
 import { InvoiceDetailModal } from './InvoiceDetailModal';
+import { ModalSubPageHeader } from './UnifiedBackHeader';
 
 interface CartLine {
   product: Product;
@@ -26,7 +31,11 @@ interface CartLine {
   unitPrice: number;
 }
 
-export const PosView: React.FC = () => {
+interface PosViewProps {
+  isActive?: boolean;
+}
+
+export const PosView: React.FC<PosViewProps> = ({ isActive = true }) => {
   const { actorInfo, isAdmin, hasPermission } = useAuth();
   const {
     products,
@@ -73,6 +82,39 @@ export const PosView: React.FC = () => {
 
   const canDiscount = isAdmin || hasPermission('canDiscount');
   const canEditPrice = isAdmin || hasPermission('canManageProducts');
+
+  useSectionDirtyGuard('pos', {
+    isDirty: () =>
+      cart.length > 0 ||
+      notes.trim().length > 0 ||
+      (Number(discountInput) || 0) > 0,
+    dirtyMessage:
+      'توجد فاتورة بيع غير محفوظة في السلة، هل تريد الخروج دون حفظ؟',
+    onDiscard: () => {
+      pendingOpIdRef.current = null;
+      setCart([]);
+      setNotes('');
+      setDiscountInput('0');
+      setPaidAmountInput('');
+      setSelectedCustomerId('');
+      setPaymentMethod('cash');
+    },
+  });
+
+  const requestCloseNewCustomer = useBackLayer({
+    id: 'pos-quick-customer',
+    active: showNewCustomer,
+    onClose: () => setShowNewCustomer(false),
+    isDirty: () =>
+      Boolean(
+        newCustName.trim() || newCustPhone.trim() || newCustAddress.trim()
+      ),
+    onDiscard: () => {
+      setNewCustName('');
+      setNewCustPhone('');
+      setNewCustAddress('');
+    },
+  });
 
   const availableStock = (product: Product): number => {
     // Projected products from StoreDataContext already reflect pending offline sales and stock adjustments.
@@ -167,7 +209,7 @@ export const PosView: React.FC = () => {
   }, [scanToast]);
 
   useEffect(() => {
-    if (!scannerEnabled) return;
+    if (!isActive || !scannerEnabled) return;
 
     const clearBuffer = () => {
       scanBufferRef.current = '';
@@ -235,7 +277,7 @@ export const PosView: React.FC = () => {
       window.removeEventListener('keydown', onKeyDown, true);
       clearBuffer();
     };
-  }, [scannerEnabled, showNewCustomer, completedSale, submitting, cameraOpen]);
+  }, [isActive, scannerEnabled, showNewCustomer, completedSale, submitting, cameraOpen]);
 
   const updateCartQty = (productId: string, nextQty: number) => {
     setErrorMsg(null);
@@ -819,69 +861,58 @@ export const PosView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleCreateQuickCustomer}
-            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 space-y-4"
+            className="bg-white border border-slate-200 rounded-2xl w-full max-w-md overflow-hidden shadow-xl"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">تسجيل عميل جديد سريع</h3>
-              <button
-                type="button"
-                onClick={() => setShowNewCustomer(false)}
-                className="p-1 text-slate-500 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  اسم العميل *
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={newCustName}
-                  onChange={(e) => setNewCustName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
+            <ModalSubPageHeader
+              title="تسجيل عميل جديد سريع"
+              onBack={requestCloseNewCustomer}
+            />
+            <div className="p-6 space-y-4">
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    اسم العميل *
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    value={newCustName}
+                    onChange={(e) => setNewCustName(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    رقم الهاتف
+                  </label>
+                  <input
+                    type="text"
+                    value={newCustPhone}
+                    onChange={(e) => setNewCustPhone(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    العنوان
+                  </label>
+                  <input
+                    type="text"
+                    value={newCustAddress}
+                    onChange={(e) => setNewCustAddress(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  رقم الهاتف
-                </label>
-                <input
-                  type="text"
-                  value={newCustPhone}
-                  onChange={(e) => setNewCustPhone(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg font-mono-num"
-                />
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={savingCustomer}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 cursor-pointer"
+                >
+                  {savingCustomer ? 'جاري الحفظ...' : 'حفظ واختيار العميل'}
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  العنوان
-                </label>
-                <input
-                  type="text"
-                  value={newCustAddress}
-                  onChange={(e) => setNewCustAddress(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
-                />
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowNewCustomer(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-700 border border-slate-200 rounded-lg cursor-pointer"
-              >
-                إلغاء
-              </button>
-              <button
-                type="submit"
-                disabled={savingCustomer}
-                className="px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 cursor-pointer"
-              >
-                {savingCustomer ? 'جاري الحفظ...' : 'حفظ واختيار العميل'}
-              </button>
             </div>
           </form>
         </div>
